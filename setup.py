@@ -1,6 +1,8 @@
 from setuptools import setup, find_packages
 
-extras_require = {key: [f"jax[{key}]"] for key in ["cpu", "tpu", "cuda11_pip", "cuda12_pip", "cuda"]}
+extras_require = {
+    key: [f"jax[{key}]"] for key in ["cpu", "tpu", "cuda11_pip", "cuda12_pip", "cuda"]
+}
 
 setup(
     name="sinc-dvr",
