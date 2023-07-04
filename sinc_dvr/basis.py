@@ -10,7 +10,11 @@ from jax.typing import ArrayLike
 
 
 class SincDVR:
-    """
+    r"""
+    Note that the grid is given as vectors. If you want to use a meshgrid,
+    e.g., when plotting, then the indexing should be set to "ij" in the
+    meshgrid-method (Jax or NumPy).
+
     Parameters
     ----------
     num_dim : int
@@ -31,6 +35,28 @@ class SincDVR:
         The distribution of devices on the computer. For a single device in
         three dimensions this is `(1, 1, 1)`. This parameter tells the program
         how the arrays should be sharded.
+    build_t_inv: bool
+        If `True` we solve the Poisson equation in order to build the inverse
+        of kinetic energy operator. Otherwise, no inverse is found. This is
+        needed for the construction of matrix elements for the Coulomb
+        attraction and interaction operators. This flag is only applicable in
+        3D, and is ignored for lower dimenisionalities. Default is `False`.
+    n_s: tuple[int]
+        The number of internal indices (dubbed :math:`n_{small}` in [1]) used
+        for the solution of the Poisson equation. Ignored if `build_t_inv =
+        False`, or `num_dim != 3`. For `n_s = None` we use `n_s =
+        element_shape` (see above). Default is `n_s = None`.
+    n_b: tuple[int]
+        The number of "far-away"-coordinates used when solving the Poisson
+        equation (dubbed :math:`n_{big}` in [1]). The same conditions as for
+        `n_s` applies. Note that `n_b >= n_s`. Default is `n_s = None`.
+
+
+    References
+    ----------
+    [1] J. R. Jones, F. H. Rouet, K. V. Lawler, E. Vecharynski, K. Z. Ibrahim,
+    S. Williams, B. Abeln, C. Yang, W. McCurdy, D. J. Haxton, X. S. Li, T. N.
+    Rescigno, Molecular Physics, 114, 13, 2014-2018, (2016)
     """
 
     def __init__(
@@ -39,6 +65,9 @@ class SincDVR:
         steps: tuple[float],
         element_factor: tuple[int],
         device_shape: tuple[int],
+        build_t_inv: bool = False,
+        n_s: tuple[int] = None,
+        n_b: tuple[int] = None,
     ) -> None:
         assert num_dim in [1, 2, 3]
         assert len(device_shape) == num_dim
@@ -47,7 +76,7 @@ class SincDVR:
 
         self.num_dim = num_dim
 
-        self.element_shape = (e * d for e, d in zip(element_factor, device_shape))
+        self.element_shape = [e * d for e, d in zip(element_factor, device_shape)]
         self.steps = steps
         self.device_shape = device_shape
         self.num_elements = math.prod(self.element_shape)
@@ -58,7 +87,7 @@ class SincDVR:
         assert self.num_devices > 0
         assert self.tot_weight > 0
 
-        self.axis_names = (["x", "y", "z"][i] for i in range(self.num_dim))
+        self.axis_names = [["x", "y", "z"][i] for i in range(self.num_dim)]
 
         self.mesh = Mesh(
             mesh_utils.create_device_mesh(self.device_shape), axis_names=self.axis_names
@@ -69,6 +98,12 @@ class SincDVR:
             setattr(self, axis_name, self.setup_grid(i))
             setattr(self, f"t_{axis_name}", self.setup_t_1d(i))
             setattr(self, f"d_{axis_name}", self.setup_d_1d(i))
+
+        if build_t_inv and self.num_dim == 3:
+            n_s = n_s or self.element_shape
+            n_b = n_b or self.element_shape
+
+            assert n_b >= n_s
 
     def setup_grid(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
@@ -117,7 +152,7 @@ class SincDVR:
         return jax.device_put(
             (
                 1
-                / dx
+                / step
                 * jnp.where(
                     i == j,
                     0,
