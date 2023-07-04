@@ -13,7 +13,7 @@ class SincDVR:
     """
     Parameters
     ----------
-    dim : int
+    num_dim : int
         The number of Cartesian dimensions in the problem. Accepted values
         are 1, 2 and 3.
     steps : tuple[float]
@@ -24,7 +24,9 @@ class SincDVR:
     element_factor : tuple[int]
         The number of elements along dimension `i` is `element_shape[i] =
         element_factor[i] * device_shape[i]`. This is to ensure that the
-        element shape and device shape are congruent.
+        element shape and device shape are congruent. Notably, this means that
+        the point `0` in an axis is included only for an odd number of devices
+        along that same axis.
     device_shape: tuple[int]
         The distribution of devices on the computer. For a single device in
         three dimensions this is `(1, 1, 1)`. This parameter tells the program
@@ -33,17 +35,17 @@ class SincDVR:
 
     def __init__(
         self,
-        dim: int,
+        num_dim: int,
         steps: tuple[float],
         element_factor: tuple[int],
         device_shape: tuple[int],
     ) -> None:
-        assert dim in [1, 2, 3]
-        assert len(device_shape) == dim
+        assert num_dim in [1, 2, 3]
+        assert len(device_shape) == num_dim
         assert len(device_shape) == len(element_factor)
         assert len(device_shape) == len(steps)
 
-        self.dim = dim
+        self.num_dim = num_dim
 
         self.element_shape = (e * d for e, d in zip(element_factor, device_shape))
         self.steps = steps
@@ -56,23 +58,23 @@ class SincDVR:
         assert self.num_devices > 0
         assert self.tot_weight > 0
 
-        axis_names = (["x", "y", "z"][i] for i in range(self.dim))
+        self.axis_names = (["x", "y", "z"][i] for i in range(self.num_dim))
 
         self.mesh = Mesh(
-            mesh_utils.create_device_mesh(self.device_shape), axis_names=axis_names
+            mesh_utils.create_device_mesh(self.device_shape), axis_names=self.axis_names
         )
-        self.spec = P(*axis_names)
+        self.spec = P(*self.axis_names)
 
-        self.grids = [
-            jax.device_put(
-                setup_grid(i), NamedSharding(self.mesh, P(self.axis_names[i]))
-            )
-            for i in range(self.dim)
-        ]
+        for i, axis_name in enumerate(self.axis_names):
+            setattr(self, axis_name, self.setup_grid(i))
+            setattr(self, f"t_{axis_name}", self.setup_t_1d(i))
+            setattr(self, f"d_{axis_name}", self.setup_d_1d(i))
 
-    def setup_grid(self, dim: int) -> jax.Array:
-        step = self.steps[dim]
-        num_elements = self.element_shape[dim]
+    def setup_grid(self, axis: int) -> jax.Array:
+        assert axis in list(range(self.num_dim))
+
+        step = self.steps[axis]
+        num_elements = self.element_shape[axis]
 
         edge = 0
         if num_elements % 2 == 0:  # Even number of elements
@@ -80,14 +82,16 @@ class SincDVR:
         else:  # Odd number of elements, zero is included
             edge = step * num_elements // 2
 
-        return jnp.linspace(-edge, edge, num_elements)
+        return jax.device_put(
+            jnp.linspace(-edge, edge, num_elements),
+            NamedSharding(self.mesh, P(self.axis_names[axis])),
+        )
 
-    def get_t_1d(self, dim: int) -> jax.Array:
-        assert dim in [1, 2, 3]
-        assert dim <= self.dim
+    def setup_t_1d(self, axis: int) -> jax.Array:
+        assert axis in list(range(self.num_dim))
 
-        step = self.steps[dim]
-        inds = jnp.arange(len(self.grids[dim - 1]))
+        step = self.steps[axis]
+        inds = jnp.arange(self.element_shape[axis])
 
         i = inds[:, None]
         j = inds[None, :]
@@ -98,7 +102,29 @@ class SincDVR:
                 jnp.pi**2 / (6 * step**2),
                 (-1.0) ** (i_min_j := i - j) / (step**2 * i_min_j**2),
             ),
-            NamedSharding(self.mesh, P(self.axis_names[dim - 1])),
+            NamedSharding(self.mesh, P(self.axis_names[axis])),
+        )
+
+    def setup_d_1d(self, axis: int) -> jax.Array:
+        assert axis in list(range(self.num_dim))
+
+        step = self.steps[axis]
+        inds = jnp.arange(self.element_shape[axis])
+
+        i = inds[:, None]
+        j = inds[None, :]
+
+        return jax.device_put(
+            (
+                1
+                / dx
+                * jnp.where(
+                    i == j,
+                    0,
+                    (-1.0) ** (i_min_j := i - j) / i_min_j,
+                )
+            ),
+            NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
 
 
@@ -134,76 +160,3 @@ def get_vecvec_ein_str(dim):
         )
 
     return ein_str
-
-
-class KineticMels1:
-    def __init__(self, grid: ArrayLike, dim: int) -> None:
-        assert dim in [1, 2, 3]
-        self.dim = dim
-
-        step = abs(grid[1] - grid[0])
-        inds = jnp.arange(len(grid))
-
-        i = inds[:, None]
-        j = inds[None, :]
-
-        self.mels = jnp.where(
-            i == j,
-            jnp.pi**2 / (6 * step**2),
-            (-1.0) ** (i_min_j := i - j) / (step**2 * i_min_j**2),
-        )
-        self.ein_str = get_matvec_ein_str(self.dim)
-
-    @partial(jax.jit, static_argnums=(0,))
-    def __call__(self, c: ArrayLike) -> jax.Array:
-        # Assuming c is on tensor form, i.e., the caller must convert from a
-        # vector to a tensor.
-        # The result is returned as a tensor of the same shape as c.
-
-        return jnp.einsum(self.ein_str, self.mels, c)
-
-
-class DerivativeMels1:
-    def __init__(self, grid: ArrayLike, dim: int) -> None:
-        assert dim in [1, 2, 3]
-        self.dim = dim
-
-        step = abs(grid[1] - grid[0])
-        inds = jnp.arange(len(grid))
-
-        i = inds[:, None]
-        j = inds[None, :]
-
-        self.mels = (
-            1
-            / dx
-            * jnp.where(
-                i == j,
-                0,
-                (-1.0) ** (i_min_j := i - j) / i_min_j,
-            )
-        )
-        self.ein_str = get_matvec_ein_str(self.dim)
-
-    @partial(jax.jit, static_argnums=(0,))
-    def __call__(self, c: ArrayLike) -> jax.Array:
-        # Assuming c is on tensor form, i.e., the caller must convert from a
-        # vector to a tensor.
-        # The result is returned as a tensor of the same shape as c.
-
-        return jnp.einsum(self.ein_str, self.mels, c)
-
-
-class MomentumMels1:
-    def __init__(self, *args, **kwargs) -> None:
-        d_class = DerivativeMels1(*args, **kwargs)
-        self.mels = -1j * d_class.mels
-        self.ein_str = d_class.ein_str
-
-    @partial(jax.jit, static_argnums=(0,))
-    def __call__(self, c: ArrayLike) -> jax.Array:
-        # Assuming c is on tensor form, i.e., the caller must convert from a
-        # vector to a tensor.
-        # The result is returned as a tensor of the same shape as c.
-
-        return jnp.einsum(self.ein_str, self.mels, c)
