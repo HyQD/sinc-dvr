@@ -3,10 +3,10 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import jax.typing
 
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
-from jax.typing import ArrayLike
 
 
 class SincDVR:
@@ -93,9 +93,16 @@ class SincDVR:
             mesh_utils.create_device_mesh(self.device_shape), axis_names=self.axis_names
         )
         self.spec = P(*self.axis_names)
+        self.inds = []
 
         for i, axis_name in enumerate(self.axis_names):
             setattr(self, axis_name, self.setup_grid(i))
+            self.inds.append(
+                jax.device_put(
+                    jnp.arange(self.element_shape[i]),
+                    NamedSharding(self.mesh, P(self.axis_name)),
+                )
+            )
             setattr(self, f"t_{axis_name}", self.setup_t_1d(i))
             setattr(self, f"d_{axis_name}", self.setup_d_1d(i))
 
@@ -103,7 +110,8 @@ class SincDVR:
             n_s = n_s or self.element_shape
             n_b = n_b or self.element_shape
 
-            assert n_b >= n_s
+            assert all([n_b[i] >= n_s[i] for i in range(self.num_dim)])
+            assert all([n_s[i] <= self.element_shape[i] for i in range(self.num_dim)])
 
     def setup_grid(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
@@ -125,17 +133,25 @@ class SincDVR:
     def setup_t_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
 
-        step = self.steps[axis]
-        inds = jnp.arange(self.element_shape[axis])
+        # step = self.steps[axis]
+        # inds = jnp.arange(self.element_shape[axis])
 
-        i = inds[:, None]
-        j = inds[None, :]
+        # i = inds[:, None]
+        # j = inds[None, :]
 
+        # return jax.device_put(
+        #     jnp.where(
+        #         i == j,
+        #         jnp.pi**2 / (6 * step**2),
+        #         (-1.0) ** (i_min_j := i - j) / (step**2 * i_min_j**2),
+        #     ),
+        #     NamedSharding(self.mesh, P(self.axis_names[axis])),
+        # )
         return jax.device_put(
-            jnp.where(
-                i == j,
-                jnp.pi**2 / (6 * step**2),
-                (-1.0) ** (i_min_j := i - j) / (step**2 * i_min_j**2),
+            setup_t_1d(
+                self.inds[axis][:, None],
+                self.inds[axis][None, :],
+                self.steps[axis],
             ),
             NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
@@ -143,24 +159,79 @@ class SincDVR:
     def setup_d_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
 
-        step = self.steps[axis]
-        inds = jnp.arange(self.element_shape[axis])
+        # step = self.steps[axis]
+        # inds = jnp.arange(self.element_shape[axis])
 
-        i = inds[:, None]
-        j = inds[None, :]
+        # i = inds[:, None]
+        # j = inds[None, :]
 
+        # return jax.device_put(
+        #     (
+        #         1
+        #         / step
+        #         * jnp.where(
+        #             i == j,
+        #             0,
+        #             (-1.0) ** (i_min_j := i - j) / i_min_j,
+        #         )
+        #     ),
+        #     NamedSharding(self.mesh, P(self.axis_names[axis])),
+        # )
         return jax.device_put(
-            (
-                1
-                / step
-                * jnp.where(
-                    i == j,
-                    0,
-                    (-1.0) ** (i_min_j := i - j) / i_min_j,
-                )
+            setup_d_1d(
+                self.inds[axis][:, None],
+                self.inds[axis][None, :],
+                self.steps[axis],
             ),
             NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
+
+    def build_t_inv(self, n_s: int, n_b: int) -> jnp.Array:
+        pass
+
+
+@jax.jit
+def setup_t_1d(
+    self, i: jax.typing.ArrayLike, j: jax.typing.ArrayLike, step: float
+) -> jax.Array:
+    return jnp.where(
+        i == j,
+        jnp.pi**2 / (6 * step**2),
+        (-1.0) ** (i_min_j := i - j) / (step**2 * i_min_j**2),
+    )
+
+
+@jax.jit
+def setup_d_1d(
+    self, i: jax.typing.ArrayLike, j: jax.typing.ArrayLike, step: float
+) -> jax.Array:
+    return (
+        1
+        / step
+        * jnp.where(
+            i == j,
+            0,
+            (-1.0) ** (i_min_j := i - j) / i_min_j,
+        )
+    )
+
+
+# Jit in case this should be called in a dynamic setting
+@jax.jit
+def v_far_away(
+    x: jax.typing.ArrayLike,
+    y: jax.typing.ArrayLike,
+    z: jax.typing.ArrayLike,
+    n_s: tuple[int],
+    steps: tuple[float],
+) -> jax.Array:
+    return jnp.where(
+        (jnp.abs(x) > steps[0] * n_s[0])
+        | (jnp.abs(y) > steps[1] * n_s[1])
+        | (jnp.abs(z) > steps[2] * n_s[2]),
+        math.prod(steps) / (2 * jnp.pi) / jnp.sqrt(x**2 + y**2 + z**2),
+        0,
+    )
 
 
 def get_matvec_ein_str(dim):
