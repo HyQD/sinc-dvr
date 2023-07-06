@@ -28,8 +28,6 @@ pip install -e ".[cpu]"
 Instead of `cpu` the same flags as for jax can be specified.
 For example, using CUDA version 12 with binaries built from pip can be installed via:
 ```bash
-pip install -e ".[cuda12_pip]"
+pip install -e ".[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ```
-
-# We need to handle the links used by Jax (e.g., `-f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html`).
-
+Here the link after `-f` is needed by Jax to find the correct CUDA components.
