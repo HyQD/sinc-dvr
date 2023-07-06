@@ -186,7 +186,7 @@ class SincDVR:
             NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
 
-    def build_t_inv(self, n_s: int, n_b: int) -> jnp.Array:
+    def build_t_inv(self, n_s: tuple[int], n_b: tuple[int]) -> jnp.Array:
         pass
 
 
@@ -215,6 +215,46 @@ def setup_d_1d(
         )
     )
 
+
+# In case of dynamical settings
+@jax.jit
+def get_rhs_vectorized(n_b: tuple[int], n_s: tuple[int], steps: tuple[float]):
+    out_inds = np.arange(-n_s, n_s + 1)
+    sum_inds = np.arange(-n_b, n_b + 1)
+    t = get_t_1d(out_inds[:, None], sum_inds[None, :], dx)
+
+    v = v_far_away(
+        sum_inds[:, None, None],
+        out_inds[None, :, None],
+        out_inds[None, None, :],
+        n_s,
+        dx,
+    )
+
+    b = (
+        -contract(
+            "ip, pjk -> ijk",
+            t,
+            v,
+        )
+        - contract(
+            "jp, ipk -> ijk",
+            t,
+            v.transpose(1, 0, 2),
+        )
+        - contract(
+            "kp, ijp -> ijk",
+            t,
+            v.transpose(2, 1, 0),
+        )
+    )
+    if n_s == n_b:
+        assert np.sum(np.abs(b)) < 1e-12
+
+    zero_loc = np.argwhere(out_inds == 0)
+    b[zero_loc, zero_loc, zero_loc] += 1
+
+    return b
 
 # Jit in case this should be called in a dynamic setting
 @jax.jit
