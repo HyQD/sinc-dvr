@@ -96,13 +96,17 @@ class SincDVR:
         self.inds = []
 
         for i, axis_name in enumerate(self.axis_names):
-            setattr(self, axis_name, self.setup_grid(i))
+            # setattr(self, axis_name, self.setup_grid(i))
             self.inds.append(
-                jax.device_put(
-                    jnp.arange(self.element_shape[i]),
-                    NamedSharding(self.mesh, P(self.axis_name)),
+                (
+                    _ := jax.device_put(
+                        jnp.arange(self.element_shape[i]),
+                        NamedSharding(self.mesh, P(self.axis_name)),
+                    )
                 )
+                - max(_) / 2  # Center around zero
             )
+            setattr(self, axis_name, self.inds[i] * self.steps[i])
             setattr(self, f"t_{axis_name}", self.setup_t_1d(i))
             setattr(self, f"d_{axis_name}", self.setup_d_1d(i))
 
@@ -113,40 +117,34 @@ class SincDVR:
             assert all([n_b[i] >= n_s[i] for i in range(self.num_dim)])
             assert all([n_s[i] <= self.element_shape[i] for i in range(self.num_dim)])
 
-    def setup_grid(self, axis: int) -> jax.Array:
-        assert axis in list(range(self.num_dim))
+            self.out_inds = [(_ := jnp.arange(o)) - max(_) / 2 for o in n_s]
+            self.sum_inds = [(_ := jnp.arange(s)) - max(s) / 2 for s in n_b]
 
-        step = self.steps[axis]
-        num_elements = self.element_shape[axis]
+            # Also known as "v" from Ref. [1]
+            self.t_inv = build_t_inv(
+                self.inds, self.out_inds, self.sum_inds, self.steps
+            )
 
-        edge = 0
-        if num_elements % 2 == 0:  # Even number of elements
-            edge = step * (num_elements // 2 - 0.5)
-        else:  # Odd number of elements, zero is included
-            edge = step * num_elements // 2
+    # def setup_grid(self, axis: int) -> jax.Array:
+    #     assert axis in list(range(self.num_dim))
 
-        return jax.device_put(
-            jnp.linspace(-edge, edge, num_elements),
-            NamedSharding(self.mesh, P(self.axis_names[axis])),
-        )
+    #     step = self.steps[axis]
+    #     num_elements = self.element_shape[axis]
+
+    #     edge = 0
+    #     if num_elements % 2 == 0:  # Even number of elements
+    #         edge = step * (num_elements // 2 - 0.5)
+    #     else:  # Odd number of elements, zero is included
+    #         edge = step * num_elements // 2
+
+    #     return jax.device_put(
+    #         jnp.linspace(-edge, edge, num_elements),
+    #         NamedSharding(self.mesh, P(self.axis_names[axis])),
+    #     )
 
     def setup_t_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
 
-        # step = self.steps[axis]
-        # inds = jnp.arange(self.element_shape[axis])
-
-        # i = inds[:, None]
-        # j = inds[None, :]
-
-        # return jax.device_put(
-        #     jnp.where(
-        #         i == j,
-        #         jnp.pi**2 / (6 * step**2),
-        #         (-1.0) ** (i_min_j := i - j) / (step**2 * i_min_j**2),
-        #     ),
-        #     NamedSharding(self.mesh, P(self.axis_names[axis])),
-        # )
         return jax.device_put(
             setup_t_1d(
                 self.inds[axis][:, None],
@@ -159,24 +157,6 @@ class SincDVR:
     def setup_d_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
 
-        # step = self.steps[axis]
-        # inds = jnp.arange(self.element_shape[axis])
-
-        # i = inds[:, None]
-        # j = inds[None, :]
-
-        # return jax.device_put(
-        #     (
-        #         1
-        #         / step
-        #         * jnp.where(
-        #             i == j,
-        #             0,
-        #             (-1.0) ** (i_min_j := i - j) / i_min_j,
-        #         )
-        #     ),
-        #     NamedSharding(self.mesh, P(self.axis_names[axis])),
-        # )
         return jax.device_put(
             setup_d_1d(
                 self.inds[axis][:, None],
@@ -185,9 +165,6 @@ class SincDVR:
             ),
             NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
-
-    def build_t_inv(self, n_s: tuple[int], n_b: tuple[int]) -> jnp.Array:
-        pass
 
 
 @jax.jit
@@ -216,62 +193,142 @@ def setup_d_1d(
     )
 
 
-# In case of dynamical settings
-@jax.jit
-def get_rhs_vectorized(n_b: tuple[int], n_s: tuple[int], steps: tuple[float]):
-    out_inds = np.arange(-n_s, n_s + 1)
-    sum_inds = np.arange(-n_b, n_b + 1)
-    t = get_t_1d(out_inds[:, None], sum_inds[None, :], dx)
+def build_t_inv(
+    inds: list[jax.typing.ArrayLike],
+    out_inds: list[jax.typing.ArrayLike],
+    sum_inds: list[jax.typing.ArrayLike],
+    steps: list[float],
+) -> jnp.Array:
+    b = poisson_rhs_generalized(out_inds, sum_inds, steps)
+    A = PoissonLHS(out_inds, steps)
+
+    x, _ = jax.scipy.sparse.linalg.cg(A, b)
+
+    assert jnp.allclose(A(x), b)
+
+    v_inner = x.reshape(tuple(len(o) for o in out_inds))
+
+    n_out = [max(o) for o in out_inds]
 
     v = v_far_away(
-        sum_inds[:, None, None],
-        out_inds[None, :, None],
-        out_inds[None, None, :],
-        n_s,
-        dx,
+        inds[0][:, None, None],
+        inds[1][None, :, None],
+        inds[2][None, None, :],
+        n_out,
+        steps,
+    )
+
+    x_mask = jnp.arange(inds[0])[abs(inds[0]) <= n_out[0]]
+    y_mask = jnp.arange(inds[1])[abs(inds[1]) <= n_out[1]]
+    z_mask = jnp.arange(inds[2])[abs(inds[2]) <= n_out[2]]
+
+    assert sum(abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) < 1e-12
+
+    v = v.at[jnp.ix_(x_mask, y_mask, z_mask)].set(v_inner)
+
+    assert sum(abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) > 1e-12
+
+    return v
+
+
+# In case of dynamical settings
+@jax.jit
+def poisson_rhs_generalized(
+    out_inds: tuple[jax.typing.ArrayLike],
+    sum_inds: tuple[jax.typing.ArrayLike],
+    steps: tuple[float],
+) -> jax.Array:
+    # Note that out_inds and sum_inds have to have the same spacing.
+    # This means that if one is even, then other must be even too.
+    # And, if one contains the zero index, then the other needs to as well.
+
+    t = [
+        get_t_1d(o[:, None], s[None, :], dw)
+        for o, s, dw in zip(out_inds, sum_inds, steps)
+    ]
+    n_out = [max(o) for o in out_inds]
+
+    v_x = v_far_away(
+        sum_inds[0][:, None, None],
+        out_inds[1][None, :, None],
+        out_inds[2][None, None, :],
+        n_out,
+        steps,
+    )
+    v_y = v_far_away(
+        out_inds[0][:, None, None],
+        sum_inds[1][None, :, None],
+        out_inds[2][None, None, :],
+        n_out,
+        steps,
+    )
+    v_z = v_far_away(
+        out_inds[0][:, None, None],
+        out_inds[1][None, :, None],
+        sum_inds[2][None, None, :],
+        n_out,
+        steps,
     )
 
     b = (
-        -contract(
-            "ip, pjk -> ijk",
-            t,
-            v,
-        )
-        - contract(
-            "jp, ipk -> ijk",
-            t,
-            v.transpose(1, 0, 2),
-        )
-        - contract(
-            "kp, ijp -> ijk",
-            t,
-            v.transpose(2, 1, 0),
-        )
+        -contract("ip, pjk -> ijk", t[0], v_x)
+        - contract("jp, ipk -> ijk", t[1], v_y)
+        - contract("kp, ijp -> ijk", t[2], v_z)
     )
-    if n_s == n_b:
-        assert np.sum(np.abs(b)) < 1e-12
 
-    zero_loc = np.argwhere(out_inds == 0)
-    b[zero_loc, zero_loc, zero_loc] += 1
+    n_sum = [max(s) for s in sum_inds]
+    assert all(s >= o for s, o in zip(n_sum, n_out))
+    if all(abs(s - o) < 1e-12 for s, o in zip(n_sum, n_out)):
+        assert jnp.sum(jnp.abs(b)) < 1e-12
+
+    zero_locs = [jnp.argwhere(o == 0) for o in out_inds]
+    b[zero_locs[0], zero_locs[1], zero_locs[2]] += 1
 
     return b
 
-# Jit in case this should be called in a dynamic setting
+
+# Jit, in case this should be called in a dynamic setting
 @jax.jit
 def v_far_away(
-    x: jax.typing.ArrayLike,
-    y: jax.typing.ArrayLike,
-    z: jax.typing.ArrayLike,
-    n_s: tuple[int],
+    i_1: jax.typing.ArrayLike,
+    i_2: jax.typing.ArrayLike,
+    i_3: jax.typing.ArrayLike,
+    n_s: tuple[float],
     steps: tuple[float],
 ) -> jax.Array:
     return jnp.where(
-        (jnp.abs(x) > steps[0] * n_s[0])
-        | (jnp.abs(y) > steps[1] * n_s[1])
-        | (jnp.abs(z) > steps[2] * n_s[2]),
-        math.prod(steps) / (2 * jnp.pi) / jnp.sqrt(x**2 + y**2 + z**2),
+        (jnp.abs(i_1) > n_s[0]) | (jnp.abs(i_2) > n_s[1]) | (jnp.abs(i_3) > n_s[2]),
+        math.prod(steps)
+        / (2 * jnp.pi)
+        / jnp.sqrt(
+            (i_1 * steps[0]) ** 2 + (i_2 * steps[1]) ** 2 + (i_3 * steps[2]) ** 2
+        ),
         0,
     )
+
+
+class PoissonLHS:
+    def __init__(
+        self, out_inds: list[jax.typing.ArrayLike], steps: tuple[float]
+    ) -> None:
+        self.out_inds = out_inds
+        self.steps = steps
+
+        self.t = [
+            get_t_1d(o[:, None], o[None, :], dw)
+            for o, dw in zip(self.out_inds, self.steps)
+        ]
+        self.v_shape = [len(s) for s in self.out_inds]
+
+    @partial(jax.jit, static_argnums=(0,))
+    def __call__(self, v: jax.typing.ArrayLike) -> jax.Array:
+        v = v.reshape(self.v_shape)
+
+        return (
+            jnp.einsum("ip, pjk -> ijk", self.t[0], v)
+            + jnp.einsum("jp, ipk -> ijk", self.t[1], v)
+            + jnp.einsum("kp, ijp -> ijk", self.t[2], v)
+        ).ravel()
 
 
 def get_matvec_ein_str(dim):
