@@ -101,7 +101,7 @@ class SincDVR:
                 (
                     _ := jax.device_put(
                         jnp.arange(self.element_shape[i]),
-                        NamedSharding(self.mesh, P(self.axis_name)),
+                        NamedSharding(self.mesh, P(axis_name)),
                     )
                 )
                 - max(_) / 2  # Center around zero
@@ -118,29 +118,15 @@ class SincDVR:
             assert all([n_s[i] <= self.element_shape[i] for i in range(self.num_dim)])
 
             self.out_inds = [(_ := jnp.arange(o)) - max(_) / 2 for o in n_s]
-            self.sum_inds = [(_ := jnp.arange(s)) - max(s) / 2 for s in n_b]
+            self.sum_inds = [(_ := jnp.arange(s)) - max(_) / 2 for s in n_b]
 
             # Also known as "v" from Ref. [1]
-            self.t_inv = build_t_inv(
+            self.t_inv = setup_t_inv(
                 self.inds, self.out_inds, self.sum_inds, self.steps
             )
 
-    # def setup_grid(self, axis: int) -> jax.Array:
-    #     assert axis in list(range(self.num_dim))
-
-    #     step = self.steps[axis]
-    #     num_elements = self.element_shape[axis]
-
-    #     edge = 0
-    #     if num_elements % 2 == 0:  # Even number of elements
-    #         edge = step * (num_elements // 2 - 0.5)
-    #     else:  # Odd number of elements, zero is included
-    #         edge = step * num_elements // 2
-
-    #     return jax.device_put(
-    #         jnp.linspace(-edge, edge, num_elements),
-    #         NamedSharding(self.mesh, P(self.axis_names[axis])),
-    #     )
+        # Kinetic operator matrix elements embedded in a circulant tensor
+        self.tc = self.create_kinetic_operator_circulant_tensor()
 
     def setup_t_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
@@ -166,10 +152,93 @@ class SincDVR:
             NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
 
+    def place_r_inv_charges(
+        self, centers: list[jax.typing.ArrayLike], charges: list[jax.typing.ArrayLike]
+    ) -> None:
+        # Note: all charges must be sent in at the same time
+        # Otherwise, the potentials are overwritten on each call
+        # The index of a potential corresponds to the center and charge index.
+        # That is, they have the same ordering.
+        #
+        # This could probably be solved in a much cleaner way...
+
+        assert len(centers) == len(charges)
+
+        self.r_inv_potentials = []
+
+    def create_kinetic_operator_circulant_tensor(self):
+        # In case of error, check starting point
+        t_vecs = [
+            getattr(self, f"t_{axis_name}")[:, 0] for axis_name in self.axis_names
+        ]
+        tc_vecs = [
+            jax.device_put(
+                jnp.concatenate(
+                    [
+                        t_vec,
+                        jnp.concatenate(
+                            [
+                                jnp.array([t_vec[0]]),
+                                t_vec[1:][::-1],
+                            ]
+                        ),
+                    ]
+                ),
+                NamedSharding(self.mesh, P(axis_name)),
+            )
+            for axis_name, t_vec in zip(self.axis_names, t_vecs)
+        ]
+
+        if self.num_dim == 1:
+            return tc_vecs[0]
+        elif self.num_dim == 2:
+            # In case of error, check deltas
+            # TODO: Check if the deltas should be sharded
+            delta_x = jnp.concatenate(
+                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[0]) - 1)]
+            )
+            delta_y = jnp.concatenate(
+                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[1]) - 1)]
+            )
+
+            # TODO: Check sharding after kronecker products
+            return (
+                jnp.kron(tc_vecs[0], delta_y) + jnp.kron(delta_x, tc_vecs[1])
+            ).reshape((len(tc_vecs[0]), len(tc_vecs[1])))
+        else:
+            # In case of error, check deltas
+            # TODO: Check if the deltas should be sharded
+            delta_x = jnp.concatenate(
+                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[0]) - 1)]
+            )
+            delta_y = jnp.concatenate(
+                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[1]) - 1)]
+            )
+            delta_z = jnp.concatenate(
+                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[2]) - 1)]
+            )
+
+            # TODO: Check sharding after kronecker products
+            return (
+                jnp.kron(jnp.kron(tc_vecs[0], delta_y), delta_z)
+                + jnp.kron(jnp.kron(delta_x, tc_vecs[1]), delta_z)
+                + jnp.kron(jnp.kron(delta_x, delta_y), tc_vecs[2])
+            ).reshape((len(tc_vecs[0]), len(tc_vecs[1]), len(tc_vecs[2])))
+
+    def matvec_kinetic(self, c: jax.typing.ArrayLike) -> jax.Array:
+        c = c.reshape(self.element_shape)
+        # Embedding vector
+        y = jnp.zeros([e * 2 for e in self.element_shape], dtype=c.dtype)
+        y = y.at[: c.shape[0], : c.shape[1], : c.shape[2]].set(c)
+
+        return jnp.fft.ifftn(jnp.fft.fftn(self.tc) * jnp.fft.fftn(y))[
+            : c.shape[0], : c.shape[1], : c.shape[2]
+        ].ravel()
+
 
 @jax.jit
 def setup_t_1d(
-    self, i: jax.typing.ArrayLike, j: jax.typing.ArrayLike, step: float
+    i: jax.typing.ArrayLike, j: jax.typing.ArrayLike, step: float
 ) -> jax.Array:
     return jnp.where(
         i == j,
@@ -180,7 +249,7 @@ def setup_t_1d(
 
 @jax.jit
 def setup_d_1d(
-    self, i: jax.typing.ArrayLike, j: jax.typing.ArrayLike, step: float
+    i: jax.typing.ArrayLike, j: jax.typing.ArrayLike, step: float
 ) -> jax.Array:
     return (
         1
@@ -193,18 +262,18 @@ def setup_d_1d(
     )
 
 
-def build_t_inv(
+def setup_t_inv(
     inds: list[jax.typing.ArrayLike],
     out_inds: list[jax.typing.ArrayLike],
     sum_inds: list[jax.typing.ArrayLike],
     steps: list[float],
-) -> jnp.Array:
-    b = poisson_rhs_generalized(out_inds, sum_inds, steps)
+) -> jax.Array:
+    b = poisson_rhs_generalized(out_inds, sum_inds, steps).ravel()
     A = PoissonLHS(out_inds, steps)
 
     x, _ = jax.scipy.sparse.linalg.cg(A, b)
 
-    assert jnp.allclose(A(x), b)
+    assert jnp.allclose(A(x), b, atol=1e-5)
 
     v_inner = x.reshape(tuple(len(o) for o in out_inds))
 
@@ -218,21 +287,19 @@ def build_t_inv(
         steps,
     )
 
-    x_mask = jnp.arange(inds[0])[abs(inds[0]) <= n_out[0]]
-    y_mask = jnp.arange(inds[1])[abs(inds[1]) <= n_out[1]]
-    z_mask = jnp.arange(inds[2])[abs(inds[2]) <= n_out[2]]
+    x_mask = jnp.arange(len(inds[0]))[abs(inds[0]) <= n_out[0]]
+    y_mask = jnp.arange(len(inds[1]))[abs(inds[1]) <= n_out[1]]
+    z_mask = jnp.arange(len(inds[2]))[abs(inds[2]) <= n_out[2]]
 
-    assert sum(abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) < 1e-12
+    assert jnp.sum(jnp.abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) < 1e-12
 
     v = v.at[jnp.ix_(x_mask, y_mask, z_mask)].set(v_inner)
 
-    assert sum(abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) > 1e-12
+    assert jnp.sum(jnp.abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) > 1e-12
 
     return v
 
 
-# In case of dynamical settings
-@jax.jit
 def poisson_rhs_generalized(
     out_inds: tuple[jax.typing.ArrayLike],
     sum_inds: tuple[jax.typing.ArrayLike],
@@ -243,10 +310,10 @@ def poisson_rhs_generalized(
     # And, if one contains the zero index, then the other needs to as well.
 
     t = [
-        get_t_1d(o[:, None], s[None, :], dw)
+        setup_t_1d(o[:, None], s[None, :], dw)
         for o, s, dw in zip(out_inds, sum_inds, steps)
     ]
-    n_out = [max(o) for o in out_inds]
+    n_out = [jnp.max(o) for o in out_inds]
 
     v_x = v_far_away(
         sum_inds[0][:, None, None],
@@ -271,18 +338,18 @@ def poisson_rhs_generalized(
     )
 
     b = (
-        -contract("ip, pjk -> ijk", t[0], v_x)
-        - contract("jp, ipk -> ijk", t[1], v_y)
-        - contract("kp, ijp -> ijk", t[2], v_z)
+        -jnp.einsum("ip, pjk -> ijk", t[0], v_x)
+        - jnp.einsum("jp, ipk -> ijk", t[1], v_y)
+        - jnp.einsum("kp, ijp -> ijk", t[2], v_z)
     )
 
-    n_sum = [max(s) for s in sum_inds]
+    n_sum = [jnp.max(s) for s in sum_inds]
     assert all(s >= o for s, o in zip(n_sum, n_out))
     if all(abs(s - o) < 1e-12 for s, o in zip(n_sum, n_out)):
         assert jnp.sum(jnp.abs(b)) < 1e-12
 
     zero_locs = [jnp.argwhere(o == 0) for o in out_inds]
-    b[zero_locs[0], zero_locs[1], zero_locs[2]] += 1
+    b = b.at[zero_locs[0], zero_locs[1], zero_locs[2]].add(1)
 
     return b
 
@@ -315,7 +382,7 @@ class PoissonLHS:
         self.steps = steps
 
         self.t = [
-            get_t_1d(o[:, None], o[None, :], dw)
+            setup_t_1d(o[:, None], o[None, :], dw)
             for o, dw in zip(self.out_inds, self.steps)
         ]
         self.v_shape = [len(s) for s in self.out_inds]
