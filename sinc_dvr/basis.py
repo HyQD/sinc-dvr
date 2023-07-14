@@ -126,7 +126,7 @@ class SincDVR:
             )
 
         # Kinetic operator matrix elements embedded in a circulant tensor
-        self.tc = self.create_kinetic_operator_circulant_tensor()
+        self.t_circulant = self.create_kinetic_operator_circulant_tensor()
 
     def setup_t_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
@@ -152,7 +152,7 @@ class SincDVR:
             NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
 
-    def place_r_inv_charges(
+    def construct_r_inv_potentials(
         self, centers: list[jax.typing.ArrayLike], charges: list[jax.typing.ArrayLike]
     ) -> None:
         # Note: all charges must be sent in at the same time
@@ -165,6 +165,9 @@ class SincDVR:
         assert len(centers) == len(charges)
 
         self.r_inv_potentials = []
+
+    def create_t_inv_circulant_tensor(self):
+        assert self.num_dim == 3
 
     def create_kinetic_operator_circulant_tensor(self):
         # In case of error, check starting point
@@ -231,7 +234,7 @@ class SincDVR:
         y = jnp.zeros([e * 2 for e in self.element_shape], dtype=c.dtype)
         y = y.at[: c.shape[0], : c.shape[1], : c.shape[2]].set(c)
 
-        return jnp.fft.ifftn(jnp.fft.fftn(self.tc) * jnp.fft.fftn(y))[
+        return jnp.fft.ifftn(jnp.fft.fftn(self.t_circulant) * jnp.fft.fftn(y))[
             : c.shape[0], : c.shape[1], : c.shape[2]
         ].ravel()
 
