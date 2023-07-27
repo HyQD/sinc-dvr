@@ -1,4 +1,5 @@
 import math
+import itertools
 from functools import partial
 
 import jax
@@ -121,12 +122,20 @@ class SincDVR:
             self.sum_inds = [(_ := jnp.arange(s)) - max(_) / 2 for s in n_b]
 
             # Also known as "v" from Ref. [1]
-            self.t_inv = setup_t_inv(
-                self.inds, self.out_inds, self.sum_inds, self.steps
+            self.t_inv = jax.device_put(
+                setup_t_inv(self.inds, self.out_inds, self.sum_inds, self.steps),
+                NamedSharding(self.mesh, self.spec),
             )
+            # TODO: Test device sharding
+            self.t_inv_fft_circ = get_fft_embedded_circulant(self.t_inv)
 
         # Kinetic operator matrix elements embedded in a circulant tensor
-        self.t_circulant = self.create_kinetic_operator_circulant_tensor()
+        # TODO: Test device sharding
+        self.t_fft_circ = get_fft_embedded_circulant(
+            get_t_ten(
+                [getattr(self, f"t_{axis_name}")[:, 0] for axis_name in self.axis_names]
+            )
+        )
 
     def setup_t_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
@@ -152,6 +161,27 @@ class SincDVR:
             NamedSharding(self.mesh, P(self.axis_names[axis])),
         )
 
+    def matvec_kinetic(self, c: jax.typing.ArrayLike) -> jax.Array:
+        return fft_matvec_solution(
+            self.t_fft_circ, c.reshape(self.element_shape)
+        ).ravel()
+
+    def evaluate_basis_functions(
+        self, position: jax.typing.ArrayLike, r_i: list[jax.typing.ArrayLike]
+    ) -> jax.Array:
+        dim = len(position)
+        assert dim == self.num_dim
+        assert dim == len(r_i)
+
+        return math.prod(
+            [
+                1
+                / jnp.sqrt(self.steps[i])
+                * jnp.sinc((position[i] - r_i[i]) / self.steps[i])
+                for i in range(dim)
+            ]
+        )
+
     def construct_r_inv_potentials(
         self, centers: list[jax.typing.ArrayLike], charges: list[jax.typing.ArrayLike]
     ) -> None:
@@ -162,81 +192,28 @@ class SincDVR:
         #
         # This could probably be solved in a much cleaner way...
 
+        assert self.num_dim == 3
         assert len(centers) == len(charges)
 
-        self.r_inv_potentials = []
-
-    def create_t_inv_circulant_tensor(self):
-        assert self.num_dim == 3
-
-    def create_kinetic_operator_circulant_tensor(self):
-        # In case of error, check starting point
-        t_vecs = [
-            getattr(self, f"t_{axis_name}")[:, 0] for axis_name in self.axis_names
-        ]
-        tc_vecs = [
-            jax.device_put(
-                jnp.concatenate(
+        # TODO: Check sharding
+        self.r_inv_potentials = [
+            2
+            * jnp.pi
+            / jnp.sqrt(self.tot_weight)
+            * q
+            * fft_matvec_solution(
+                self.t_inv_fft_circ,
+                self.evaluate_basis_functions(
+                    c,
                     [
-                        t_vec,
-                        jnp.concatenate(
-                            [
-                                jnp.array([t_vec[0]]),
-                                t_vec[1:][::-1],
-                            ]
-                        ),
-                    ]
+                        self.x[:, None, None],
+                        self.y[None, :, None],
+                        self.z[None, None, :],
+                    ],
                 ),
-                NamedSharding(self.mesh, P(axis_name)),
             )
-            for axis_name, t_vec in zip(self.axis_names, t_vecs)
+            for c, q in zip(centers, charges)
         ]
-
-        if self.num_dim == 1:
-            return tc_vecs[0]
-        elif self.num_dim == 2:
-            # In case of error, check deltas
-            # TODO: Check if the deltas should be sharded
-            delta_x = jnp.concatenate(
-                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[0]) - 1)]
-            )
-            delta_y = jnp.concatenate(
-                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[1]) - 1)]
-            )
-
-            # TODO: Check sharding after kronecker products
-            return (
-                jnp.kron(tc_vecs[0], delta_y) + jnp.kron(delta_x, tc_vecs[1])
-            ).reshape((len(tc_vecs[0]), len(tc_vecs[1])))
-        else:
-            # In case of error, check deltas
-            # TODO: Check if the deltas should be sharded
-            delta_x = jnp.concatenate(
-                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[0]) - 1)]
-            )
-            delta_y = jnp.concatenate(
-                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[1]) - 1)]
-            )
-            delta_z = jnp.concatenate(
-                [jnp.array([1.0]), jnp.zeros(len(tc_vecs[2]) - 1)]
-            )
-
-            # TODO: Check sharding after kronecker products
-            return (
-                jnp.kron(jnp.kron(tc_vecs[0], delta_y), delta_z)
-                + jnp.kron(jnp.kron(delta_x, tc_vecs[1]), delta_z)
-                + jnp.kron(jnp.kron(delta_x, delta_y), tc_vecs[2])
-            ).reshape((len(tc_vecs[0]), len(tc_vecs[1]), len(tc_vecs[2])))
-
-    def matvec_kinetic(self, c: jax.typing.ArrayLike) -> jax.Array:
-        c = c.reshape(self.element_shape)
-        # Embedding vector
-        y = jnp.zeros([e * 2 for e in self.element_shape], dtype=c.dtype)
-        y = y.at[: c.shape[0], : c.shape[1], : c.shape[2]].set(c)
-
-        return jnp.fft.ifftn(jnp.fft.fftn(self.t_circulant) * jnp.fft.fftn(y))[
-            : c.shape[0], : c.shape[1], : c.shape[2]
-        ].ravel()
 
 
 @jax.jit
@@ -298,7 +275,12 @@ def setup_t_inv(
 
     v = v.at[jnp.ix_(x_mask, y_mask, z_mask)].set(v_inner)
 
-    assert jnp.sum(jnp.abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) > 1e-12
+    if (
+        len(x_mask) < len(inds[0])
+        or len(y_mask) < len(inds[1])
+        or len(z_mask) < len(inds[2])
+    ):
+        assert jnp.sum(jnp.abs(v[jnp.ix_(x_mask, y_mask, z_mask)])) > 1e-12
 
     return v
 
@@ -399,6 +381,52 @@ class PoissonLHS:
             + jnp.einsum("jp, ipk -> ijk", self.t[1], v)
             + jnp.einsum("kp, ijp -> ijk", self.t[2], v)
         ).ravel()
+
+
+@jax.jit
+def get_t_ten(t_vecs):
+    assert len(t_vecs) in [1, 2, 3]
+
+    if len(t_vecs) == 1:
+        return t_vecs[0]
+
+    deltas = [
+        jnp.concatenate([jnp.array([1]), jnp.zeros(len(t_vecs[i]) - 1)])
+        for i in range(len(t_vecs))
+    ]
+
+    if len(t_vecs) == 2:
+        return (
+            jnp.kron(t_vecs[0], deltas[1]) + jnp.kron(deltas[0], t_vecs[1])
+        ).reshape([len(t) for t in t_vecs])
+    return (
+        jnp.kron(jnp.kron(t_vecs[0], deltas[1]), deltas[2])
+        + jnp.kron(jnp.kron(deltas[0], t_vecs[1]), deltas[2])
+        + jnp.kron(jnp.kron(deltas[0], deltas[1]), t_vecs[2])
+    ).reshape([len(t) for t in t_vecs])
+
+
+@jax.jit
+def get_fft_embedded_circulant(t_ten):
+    t_slices = [[slice(0, n), 0, slice(n, 0, -1)] for n in t_ten.shape]
+    c_slices = [[slice(0, n), n, slice(n + 1, 2 * n)] for n in t_ten.shape]
+    c = jnp.zeros([2 * n for n in t_ten.shape])
+    for c_s, t_s in zip(
+        itertools.product(*c_slices),
+        itertools.product(*t_slices),
+    ):
+        c = c.at[c_s].set(t_ten[t_s])
+    return jnp.fft.fftn(c)
+
+
+@jax.jit
+def fft_matvec_solution(fft_circ_ten, x_t):
+    slices = tuple(slice(0, s) for s in x_t.shape)
+    y = jnp.zeros([2 * s for s in x_t.shape])
+    y = y.at[slices].set(x_t)
+    fft_y = jnp.fft.fftn(y)
+
+    return jnp.fft.ifftn(fft_circ_ten * fft_y)[slices]
 
 
 def get_matvec_ein_str(dim):
