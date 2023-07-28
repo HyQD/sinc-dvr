@@ -46,7 +46,9 @@ class SincDVR:
         The number of internal indices (dubbed :math:`n_{small}` in [1]) used
         for the solution of the Poisson equation. Ignored if `build_t_inv =
         False`, or `num_dim != 3`. For `n_s = None` we use `n_s =
-        element_shape` (see above). Default is `n_s = None`.
+        element_shape` (see above). Note that if the number of elements along
+        one axis is even/odd, then the corresponding `n_s` must be even/odd.
+        Default is `n_s = None`.
     n_b: tuple[int]
         The number of "far-away"-coordinates used when solving the Poisson
         equation (dubbed :math:`n_{big}` in [1]). The same conditions as for
@@ -117,6 +119,13 @@ class SincDVR:
 
             assert all([n_b[i] >= n_s[i] for i in range(self.num_dim)])
             assert all([n_s[i] <= self.element_shape[i] for i in range(self.num_dim)])
+            assert all(
+                [
+                    (n_s[i] % 2) == (self.element_shape[i] % 2)
+                    for i in range(self.num_dim)
+                ]
+            )
+            assert all([(n_s[i] % 2) == (n_b[i] % 2) for i in range(self.num_dim)])
 
             self.out_inds = [(_ := jnp.arange(o)) - max(_) / 2 for o in n_s]
             self.sum_inds = [(_ := jnp.arange(s)) - max(_) / 2 for s in n_b]
@@ -214,6 +223,17 @@ class SincDVR:
             )
             for c, q in zip(centers, charges)
         ]
+
+        return self
+
+    def get_kinetic_matvec_operator(self):
+        @jax.jit
+        def matvec_kinetic(c):
+            return fft_matvec_solution(
+                self.t_fft_circ, c.reshape(self.element_shape)
+            ).ravel()
+
+        return matvec_kinetic
 
 
 @jax.jit
