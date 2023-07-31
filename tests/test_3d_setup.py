@@ -23,7 +23,7 @@ class Setup3DTests(unittest.TestCase):
             num_dim=3,
             steps=(0.1, 0.2, 0.3),
             element_factor=(10, 11, 13),
-            device_shape=(1, 1, 1),
+            device_shape=device_shape,
             build_t_inv=True,
             n_s=(6, 7, 9),
             n_b=(28, 29, 31),
@@ -56,7 +56,7 @@ class Setup3DTests(unittest.TestCase):
             num_dim=3,
             steps=(0.1, 0.2, 0.3),
             element_factor=(10, 11, 13),
-            device_shape=(1, 1, 1),
+            device_shape=device_shape,
             build_t_inv=False,
         )
 

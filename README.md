@@ -31,3 +31,14 @@ For example, using CUDA version 12 with binaries built from pip can be installed
 pip install -e ".[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ```
 Here the link after `-f` is needed by Jax to find the correct CUDA components.
+
+
+## Testing
+To run the tests call:
+```bash
+python -m unittest
+```
+Note that the tests emulate several devices using the `XLA_FLAGS` environment
+variable from above.
+This does not seem to supported on the GPU, so the tests should be run using
+the CPU.
