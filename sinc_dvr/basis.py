@@ -42,17 +42,18 @@ class SincDVR:
         needed for the construction of matrix elements for the Coulomb
         attraction and interaction operators. This flag is only applicable in
         3D, and is ignored for lower dimenisionalities. Default is `False`.
-    n_s: tuple[int]
+    n_in_factor: tuple[int]
         The number of internal indices (dubbed :math:`n_{small}` in [1]) used
-        for the solution of the Poisson equation. Ignored if `build_t_inv =
-        False`, or `num_dim != 3`. For `n_s = None` we use `n_s =
-        element_shape` (see above). Note that if the number of elements along
-        one axis is even/odd, then the corresponding `n_s` must be even/odd.
-        Default is `n_s = None`.
-    n_b: tuple[int]
+        for the solution of the Poisson equation is given by `n_in[i] =
+        n_in_factor[i] * device_shape[i]`. Ignored if `build_t_inv = False`, or
+        `num_dim != 3`. For `n_in_factor = None` we use `n_in = element_shape`
+        (see above). Default is `n_s = None`.
+    n_out_factor: tuple[int]
         The number of "far-away"-coordinates used when solving the Poisson
-        equation (dubbed :math:`n_{big}` in [1]). The same conditions as for
-        `n_s` applies. Note that `n_b >= n_s`. Default is `n_s = None`.
+        equation (dubbed :math:`n_{big}` in [1]) is `n_out[i] = n_out_factor[i]
+        * device_shape[i]`. The same conditions as for `n_in_factor` applies.
+        Note that `n_out_factor[i] >= n_in_factor[i]`. Default is `n_out_factor
+        = None`.
 
 
     References
@@ -69,8 +70,8 @@ class SincDVR:
         element_factor: tuple[int],
         device_shape: tuple[int],
         build_t_inv: bool = False,
-        n_s: tuple[int] = None,
-        n_b: tuple[int] = None,
+        n_in_factor: tuple[int] = None,
+        n_out_factor: tuple[int] = None,
     ) -> None:
         assert num_dim in [1, 2, 3]
         assert len(device_shape) == num_dim
@@ -114,25 +115,27 @@ class SincDVR:
             setattr(self, f"d_{axis_name}", self.setup_d_1d(i))
 
         if build_t_inv and self.num_dim == 3:
-            n_s = n_s or self.element_shape
-            n_b = n_b or self.element_shape
+            n_in = [e * d for e, d in zip(n_in_factor or element_factor, device_shape)]
+            n_out = [
+                e * d for e, d in zip(n_out_factor or element_factor, device_shape)
+            ]
 
-            assert all([n_b[i] >= n_s[i] for i in range(self.num_dim)])
-            assert all([n_s[i] <= self.element_shape[i] for i in range(self.num_dim)])
+            assert all([n_out[i] >= n_in[i] for i in range(self.num_dim)])
+            assert all([n_in[i] <= self.element_shape[i] for i in range(self.num_dim)])
             assert all(
                 [
-                    (n_s[i] % 2) == (self.element_shape[i] % 2)
+                    (n_in[i] % 2) == (self.element_shape[i] % 2)
                     for i in range(self.num_dim)
                 ]
             )
-            assert all([(n_s[i] % 2) == (n_b[i] % 2) for i in range(self.num_dim)])
+            assert all([(n_in[i] % 2) == (n_out[i] % 2) for i in range(self.num_dim)])
 
-            self.out_inds = [(_ := jnp.arange(o)) - max(_) / 2 for o in n_s]
-            self.sum_inds = [(_ := jnp.arange(s)) - max(_) / 2 for s in n_b]
+            self.ret_inds = [(_ := jnp.arange(o)) - max(_) / 2 for o in n_in]
+            self.sum_inds = [(_ := jnp.arange(s)) - max(_) / 2 for s in n_out]
 
             # Also known as "v" from Ref. [1]
             self.t_inv = jax.device_put(
-                setup_t_inv(self.inds, self.out_inds, self.sum_inds, self.steps),
+                setup_t_inv(self.inds, self.ret_inds, self.sum_inds, self.steps),
                 NamedSharding(self.mesh, self.spec),
             )
             # TODO: Test device sharding
@@ -192,7 +195,7 @@ class SincDVR:
         )
 
     def construct_r_inv_potentials(
-        self, centers: list[jax.typing.ArrayLike], charges: list[jax.typing.ArrayLike]
+        self, centers: list[jax.typing.ArrayLike], charges: list[float]
     ) -> None:
         # Note: all charges must be sent in at the same time
         # Otherwise, the potentials are overwritten on each call
@@ -227,6 +230,9 @@ class SincDVR:
         return self
 
     def get_kinetic_matvec_operator(self):
+        # Note: This operator expects c to be passed in a single vector.
+        # If there are more columns, they should be passed in one at a time
+        # from the caller.
         @jax.jit
         def matvec_kinetic(c):
             return fft_matvec_solution(
@@ -234,6 +240,55 @@ class SincDVR:
             ).ravel()
 
         return matvec_kinetic
+
+    def get_coulomb_interaction_matvec_operator(
+        self,
+        charge_1: float,
+        charge_2: float,
+        kind: str,
+    ):
+        """
+        Parameters
+        ----------
+        charge_1 : float
+            The charge of the first particle.
+        charge_2 : float
+            The charge of the second particle.
+        kind : str
+            Toggle which kind of Coulomb interaction operator.
+            Valid values are `"d"` for direct, and `"e"` for exchange.
+        """
+        assert kind in ["d", "e"]
+
+        @jax.jit
+        def matvec_direct(d_conj, d, c):
+            return (
+                charge_1
+                * charge_2
+                * 2
+                * jnp.pi
+                / self.tot_weight
+                * fft_matvec_solution(
+                    self.t_inv_fft_circ, (d_conj * d).reshape(self.element_shape)
+                ).ravel()
+                * c
+            )
+
+        @jax.jit
+        def matvec_exchange(d_conj, d, c):
+            return (
+                charge_1
+                * charge_2
+                * 2
+                * jnp.pi
+                / self.tot_weight
+                * fft_matvec_solution(
+                    self.t_inv_fft_circ, (d_conj * c).reshape(self.element_shape)
+                ).ravel()
+                * d
+            )
+
+        return matvec_direct if kind == "d" else matvec_exchange
 
 
 @jax.jit
@@ -264,20 +319,20 @@ def setup_d_1d(
 
 def setup_t_inv(
     inds: list[jax.typing.ArrayLike],
-    out_inds: list[jax.typing.ArrayLike],
+    ret_inds: list[jax.typing.ArrayLike],
     sum_inds: list[jax.typing.ArrayLike],
     steps: list[float],
 ) -> jax.Array:
-    b = poisson_rhs_generalized(out_inds, sum_inds, steps).ravel()
-    A = PoissonLHS(out_inds, steps)
+    b = poisson_rhs_generalized(ret_inds, sum_inds, steps).ravel()
+    A = PoissonLHS(ret_inds, steps)
 
     x, _ = jax.scipy.sparse.linalg.cg(A, b)
 
     assert jnp.allclose(A(x), b, atol=1e-5)
 
-    v_inner = x.reshape(tuple(len(o) for o in out_inds))
+    v_inner = x.reshape(tuple(len(o) for o in ret_inds))
 
-    n_out = [max(o) for o in out_inds]
+    n_out = [max(o) for o in ret_inds]
 
     v = v_far_away(
         inds[0][:, None, None],
@@ -306,37 +361,37 @@ def setup_t_inv(
 
 
 def poisson_rhs_generalized(
-    out_inds: tuple[jax.typing.ArrayLike],
+    ret_inds: tuple[jax.typing.ArrayLike],
     sum_inds: tuple[jax.typing.ArrayLike],
     steps: tuple[float],
 ) -> jax.Array:
-    # Note that out_inds and sum_inds have to have the same spacing.
+    # Note that ret_inds and sum_inds have to have the same spacing.
     # This means that if one is even, then other must be even too.
     # And, if one contains the zero index, then the other needs to as well.
 
     t = [
         setup_t_1d(o[:, None], s[None, :], dw)
-        for o, s, dw in zip(out_inds, sum_inds, steps)
+        for o, s, dw in zip(ret_inds, sum_inds, steps)
     ]
-    n_out = [jnp.max(o) for o in out_inds]
+    n_out = [jnp.max(o) for o in ret_inds]
 
     v_x = v_far_away(
         sum_inds[0][:, None, None],
-        out_inds[1][None, :, None],
-        out_inds[2][None, None, :],
+        ret_inds[1][None, :, None],
+        ret_inds[2][None, None, :],
         n_out,
         steps,
     )
     v_y = v_far_away(
-        out_inds[0][:, None, None],
+        ret_inds[0][:, None, None],
         sum_inds[1][None, :, None],
-        out_inds[2][None, None, :],
+        ret_inds[2][None, None, :],
         n_out,
         steps,
     )
     v_z = v_far_away(
-        out_inds[0][:, None, None],
-        out_inds[1][None, :, None],
+        ret_inds[0][:, None, None],
+        ret_inds[1][None, :, None],
         sum_inds[2][None, None, :],
         n_out,
         steps,
@@ -353,7 +408,7 @@ def poisson_rhs_generalized(
     if all(abs(s - o) < 1e-12 for s, o in zip(n_sum, n_out)):
         assert jnp.sum(jnp.abs(b)) < 1e-12
 
-    zero_locs = [jnp.argwhere(o == 0) for o in out_inds]
+    zero_locs = [jnp.argwhere(o == 0) for o in ret_inds]
     b = b.at[zero_locs[0], zero_locs[1], zero_locs[2]].add(1)
 
     return b
@@ -381,16 +436,16 @@ def v_far_away(
 
 class PoissonLHS:
     def __init__(
-        self, out_inds: list[jax.typing.ArrayLike], steps: tuple[float]
+        self, ret_inds: list[jax.typing.ArrayLike], steps: tuple[float]
     ) -> None:
-        self.out_inds = out_inds
+        self.ret_inds = ret_inds
         self.steps = steps
 
         self.t = [
             setup_t_1d(o[:, None], o[None, :], dw)
-            for o, dw in zip(self.out_inds, self.steps)
+            for o, dw in zip(self.ret_inds, self.steps)
         ]
-        self.v_shape = [len(s) for s in self.out_inds]
+        self.v_shape = [len(s) for s in self.ret_inds]
 
     @partial(jax.jit, static_argnums=(0,))
     def __call__(self, v: jax.typing.ArrayLike) -> jax.Array:

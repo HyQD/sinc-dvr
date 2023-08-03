@@ -25,8 +25,8 @@ class Setup3DTests(unittest.TestCase):
             element_factor=(10, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_s=(6, 7, 9),
-            n_b=(28, 29, 31),
+            n_in_factor=(6, 7, 9),
+            n_out_factor=(28, 29, 31),
         )
 
         # Check that grid is equal on both sides of zero
@@ -81,16 +81,12 @@ class Setup3DTests(unittest.TestCase):
             element_factor=(10, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_s=(6, 7, 9),
-            n_b=(28, 29, 31),
+            n_in_factor=(6, 7, 9),
+            n_out_factor=(28, 29, 31),
         ).construct_r_inv_potentials(
             centers=[jnp.array([0.0, 0.0, 0.0]), jnp.array([0.5, 0.3, -0.5])],
             charges=[-1.0, 2.0],
         )
 
-        print(sd.r_inv_potentials[0].devices())
-        wat
         assert sd.r_inv_potentials[0].shape == tuple(sd.element_shape)
         assert sd.r_inv_potentials[1].shape == tuple(sd.element_shape)
-
-        del os.environ["XLA_FLAGS"]
