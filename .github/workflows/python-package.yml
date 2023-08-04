@@ -32,6 +32,8 @@ jobs:
       run: |
         pip install -e .[cpu]
     - name: Test with unittest
+      run: |
         python -m unittest
     - name: Test formatting
+      run: |
         black . --check
