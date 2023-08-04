@@ -1,7 +1,9 @@
 # Cartesian sinc discrete-variable representation (DVR) matrix elements
 
+Implementation of the 3D Cartesian sinc DVR basis from the paper by [Jones et al.](https://doi.org/10.1080/00268976.2016.1176262).
 
-## Testing different geometries
+
+## Testing different device geometries
 
 To test locally different device geometries, the `XLA_FLAGS` from
 [jax](https://jax.readthedocs.io/en/latest/jax-101/06-parallelism.html#aside-hosts-and-devices-in-jax)
