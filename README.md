@@ -1,5 +1,8 @@
 # Cartesian sinc discrete-variable representation (DVR) matrix elements
 
+![](https://github.com/HyQD/sinc-dvr/actions/workflows/python-package.yml/badge.svg)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black)
+
 Implementation of the 3D Cartesian sinc DVR basis from the paper by [Jones et al.](https://doi.org/10.1080/00268976.2016.1176262).
 
 
