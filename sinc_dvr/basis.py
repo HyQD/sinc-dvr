@@ -234,10 +234,13 @@ class SincDVR:
         # If there are more columns, they should be passed in one at a time
         # from the caller.
         @jax.jit
-        def matvec_kinetic(c):
-            return fft_matvec_solution(
-                self.t_fft_circ, c.reshape(self.element_shape)
-            ).ravel()
+        def matvec_kinetic(
+            c,
+            # Ensure closure for the parameters below
+            t_fft_circ=self.t_fft_circ,
+            element_shape=self.element_shape,
+        ):
+            return fft_matvec_solution(t_fft_circ, c.reshape(element_shape)).ravel()
 
         return matvec_kinetic
 
@@ -262,29 +265,49 @@ class SincDVR:
         assert kind in ["d", "e"]
 
         @jax.jit
-        def matvec_direct(d_conj, d, c):
+        def matvec_direct(
+            d_conj,
+            d,
+            c,
+            # Ensure closure for the parameters below
+            charge_1=charge_1,
+            charge_2=charge_2,
+            tot_weight=self.tot_weight,
+            t_inv_fft_circ=self.t_inv_fft_circ,
+            element_shape=self.element_shape,
+        ):
             return (
                 charge_1
                 * charge_2
                 * 2
                 * jnp.pi
-                / self.tot_weight
+                / tot_weight
                 * fft_matvec_solution(
-                    self.t_inv_fft_circ, (d_conj * d).reshape(self.element_shape)
+                    t_inv_fft_circ, (d_conj * d).reshape(element_shape)
                 ).ravel()
                 * c
             )
 
         @jax.jit
-        def matvec_exchange(d_conj, d, c):
+        def matvec_exchange(
+            d_conj,
+            d,
+            c,
+            # Ensure closure for the parameters below
+            charge_1=charge_1,
+            charge_2=charge_2,
+            tot_weight=self.tot_weight,
+            t_inv_fft_circ=self.t_inv_fft_circ,
+            element_shape=self.element_shape,
+        ):
             return (
                 charge_1
                 * charge_2
                 * 2
                 * jnp.pi
-                / self.tot_weight
+                / tot_weight
                 * fft_matvec_solution(
-                    self.t_inv_fft_circ, (d_conj * c).reshape(self.element_shape)
+                    t_inv_fft_circ, (d_conj * c).reshape(element_shape)
                 ).ravel()
                 * d
             )
