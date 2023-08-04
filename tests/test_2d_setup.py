@@ -1,6 +1,11 @@
 import os
 import math
 
+# Note that device shape is global across testing.
+# That is, the XLA_FLAGS can only be set once.
+# This means that the product of the device shape across different tests
+# scripts must be equal.
+
 device_shape = (2, 3)
 num_devices = math.prod(device_shape)
 
