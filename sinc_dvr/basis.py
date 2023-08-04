@@ -258,6 +258,7 @@ class SincDVR:
             Toggle which kind of Coulomb interaction operator.
             Valid values are `"d"` for direct, and `"e"` for exchange.
         """
+        assert self.num_dim == 3
         assert kind in ["d", "e"]
 
         @jax.jit

@@ -18,7 +18,7 @@ from sinc_dvr import SincDVR
 
 
 class Setup3DTests(unittest.TestCase):
-    def test_3d_1device_setup(self):
+    def test_3d_setup(self):
         sd = SincDVR(
             num_dim=3,
             steps=(0.1, 0.2, 0.3),
@@ -90,3 +90,23 @@ class Setup3DTests(unittest.TestCase):
 
         assert sd.r_inv_potentials[0].shape == tuple(sd.element_shape)
         assert sd.r_inv_potentials[1].shape == tuple(sd.element_shape)
+
+    def test_coulomb_interaction_operators(self):
+        sd = SincDVR(
+            num_dim=3,
+            steps=(0.1, 0.2, 0.3),
+            element_factor=(10, 11, 13),
+            device_shape=device_shape,
+            build_t_inv=True,
+            n_in_factor=(6, 7, 9),
+            n_out_factor=(28, 29, 31),
+        )
+        coulomb_d = sd.get_coulomb_interaction_matvec_operator(-1, -1, "d")
+        coulomb_e = sd.get_coulomb_interaction_matvec_operator(-1, -1, "e")
+
+        c = jax.random.normal(jax.random.PRNGKey(2), (math.prod(sd.element_shape), 3))
+
+        c_d = coulomb_d(c[:, 0].conj(), c[:, 1], c[:, 2])
+        c_e = coulomb_e(c[:, 0].conj(), c[:, 2], c[:, 1])
+
+        assert jnp.allclose(c_d, c_e, atol=1e-3)
