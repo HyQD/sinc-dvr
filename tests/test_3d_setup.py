@@ -1,7 +1,7 @@
 import os
 import math
 
-device_shape = (1, 3, 3)
+device_shape = (1, 2, 3)
 num_devices = math.prod(device_shape)
 
 os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={num_devices}"
