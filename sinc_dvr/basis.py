@@ -509,7 +509,7 @@ def get_t_ten(t_vecs):
 def get_fft_embedded_circulant(t_ten):
     t_slices = [[slice(0, n), 0, slice(n, 0, -1)] for n in t_ten.shape]
     c_slices = [[slice(0, n), n, slice(n + 1, 2 * n)] for n in t_ten.shape]
-    c = jnp.zeros([2 * n for n in t_ten.shape])
+    c = jnp.zeros([2 * n for n in t_ten.shape], dtype=t_ten.dtype)
     for c_s, t_s in zip(
         itertools.product(*c_slices),
         itertools.product(*t_slices),
@@ -521,7 +521,7 @@ def get_fft_embedded_circulant(t_ten):
 @jax.jit
 def fft_matvec_solution(fft_circ_ten, x_t):
     slices = tuple(slice(0, s) for s in x_t.shape)
-    y = jnp.zeros([2 * s for s in x_t.shape])
+    y = jnp.zeros([2 * s for s in x_t.shape], dtype=x_t.dtype)
     y = y.at[slices].set(x_t)
     fft_y = jnp.fft.fftn(y)
 
