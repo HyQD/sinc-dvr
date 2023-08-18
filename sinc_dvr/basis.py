@@ -207,12 +207,12 @@ class SincDVR:
         assert self.num_dim == 3
         assert len(centers) == len(charges)
 
+        print("YOLO3")
         # TODO: Check sharding
+        # TODO: The fft-solution gives wrong potentials
         self.r_inv_potentials = [
-            2
-            * jnp.pi
-            / jnp.sqrt(self.tot_weight)
-            * q
+            2 * jnp.pi / jnp.sqrt(self.tot_weight) * q
+            # * self.t_inv.ravel()
             * fft_matvec_solution(
                 self.t_inv_fft_circ,
                 self.evaluate_basis_functions(
