@@ -93,8 +93,8 @@ class Setup3DTests(unittest.TestCase):
             charges=[-1.0, 2.0],
         )
 
-        assert sd.r_inv_potentials[0].shape == tuple(sd.element_shape)
-        assert sd.r_inv_potentials[1].shape == tuple(sd.element_shape)
+        assert sd.r_inv_potentials[0].shape == (math.prod(sd.element_shape),)
+        assert sd.r_inv_potentials[1].shape == (math.prod(sd.element_shape),)
 
     def test_coulomb_interaction_operators(self):
         sd = SincDVR(

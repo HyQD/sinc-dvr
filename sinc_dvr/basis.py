@@ -223,7 +223,7 @@ class SincDVR:
                         self.z[None, None, :],
                     ],
                 ),
-            )
+            ).ravel()
             for c, q in zip(centers, charges)
         ]
 
