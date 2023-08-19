@@ -207,7 +207,6 @@ class SincDVR:
         assert self.num_dim == 3
         assert len(centers) == len(charges)
 
-        print("YOLO3")
         # TODO: Check sharding
         # TODO: The fft-solution gives wrong potentials
         self.r_inv_potentials = [

@@ -6,7 +6,7 @@ import math
 # This means that the product of the device shape across different tests
 # scripts must be equal.
 
-device_shape = (1, 2, 3)
+device_shape = (1, 1, 3)
 num_devices = math.prod(device_shape)
 
 os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={num_devices}"
@@ -20,6 +20,7 @@ from jax.config import config
 config.update("jax_enable_x64", True)
 
 from sinc_dvr import SincDVR
+from sinc_dvr.basis import fft_matvec_solution
 
 
 class Setup3DTests(unittest.TestCase):
@@ -78,6 +79,63 @@ class Setup3DTests(unittest.TestCase):
 
         assert jnp.allclose(res.ravel(), res_fft)
         assert jnp.allclose(res.ravel(), mvk_func(c.ravel()))
+
+    def test_t_inv_fft(self):
+        sd = SincDVR(
+            num_dim=3,
+            steps=(0.1, 0.2, 0.3),
+            element_factor=(11, 13, 5),
+            device_shape=device_shape,
+            build_t_inv=True,
+            n_in_factor=(7, 9, 3),
+            n_out_factor=(29, 31, 23),
+        )
+
+        # TODO: Figure out why these are shifted!
+        c = jnp.array([0.0, 0.0, 0.0])
+        c = jnp.array([sd.x[0], sd.y[0], sd.z[0]])
+        t_inv_from_fft = fft_matvec_solution(
+            sd.t_inv_fft_circ,
+            (
+                chi := sd.evaluate_basis_functions(
+                    c,
+                    [
+                        sd.x[:, None, None],
+                        sd.y[None, :, None],
+                        sd.z[None, None, :],
+                    ],
+                )
+            ),
+        )
+
+        # Very slow test below
+        # for j_1 in range(sd.element_shape[0]):
+        #     for j_2 in range(sd.element_shape[1]):
+        #         for j_3 in range(sd.element_shape[2]):
+        #             val = 0.0
+        #             for m_1 in range(sd.element_shape[0]):
+        #                 for m_2 in range(sd.element_shape[1]):
+        #                     for m_3 in range(sd.element_shape[2]):
+        #                         val += sd.t_inv[- m_1 + j_1, - m_2 + j_2, - m_3 + j_3] * chi[m_1, m_2, m_3]
+        #             assert abs(val - t_inv_from_fft[j_1, j_2, j_3]) < 1e-12
+
+        if all(sd.element_shape[i] % 2 == 1 for i in range(3)):
+            z = [sd.element_shape[i] // 2 for i in range(3)]
+            z = [0, 0, 0]
+            assert (
+                abs(
+                    jnp.sum(jnp.abs(chi))
+                    - sd.evaluate_basis_functions(
+                        c, [sd.x[z[0]], sd.y[z[1]], sd.z[z[2]]]
+                    )
+                )
+                < 1e-12
+            )
+
+        assert jnp.allclose(sd.t_inv / jnp.sqrt(sd.tot_weight), t_inv_from_fft)
+        # print(sd.t_inv)
+        # print(jnp.max(jnp.abs(sd.t_inv)))
+        # print(jnp.sum(jnp.abs(sd.t_inv)))
 
     def test_r_inv_potentials(self):
         sd = SincDVR(
