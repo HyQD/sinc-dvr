@@ -119,10 +119,19 @@ class Setup3DTests(unittest.TestCase):
 
         assert jnp.allclose(sd.t_inv / jnp.sqrt(sd.tot_weight), t_inv_from_fft)
 
-        sd.construct_r_inv_potentials([c], [-1])
+        sd.construct_r_inv_potentials([c, jnp.array([sd.steps[0], 0.0, 0.0])], [-1, 1])
 
         assert jnp.allclose(
             -2 * jnp.pi * sd.t_inv.ravel() / sd.tot_weight, sd.r_inv_potentials[0]
+        )
+        # Check that maximum of (positive) Coulomb potential is at [dx, 0, 0]
+        assert (
+            sd.x[
+                jnp.argmax(
+                    sd.r_inv_potentials[1].real.reshape(sd.element_shape)[:, z[1], z[2]]
+                )
+            ]
+            == sd.steps[0]
         )
 
     def test_r_inv_potentials(self):
