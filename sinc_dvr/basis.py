@@ -41,7 +41,9 @@ class SincDVR:
         of kinetic energy operator. Otherwise, no inverse is found. This is
         needed for the construction of matrix elements for the Coulomb
         attraction and interaction operators. This flag is only applicable in
-        3D, and is ignored for lower dimenisionalities. Default is `False`.
+        3D, and is ignored for lower dimenisionalities. Note that the number of
+        elements must be odd in all directions when using this flag.  Default
+        is `False`.
     n_in_factor: tuple[int]
         The number of internal indices (dubbed :math:`n_{small}` in [1]) used
         for the solution of the Poisson equation is given by `n_in[i] =
@@ -115,6 +117,7 @@ class SincDVR:
             setattr(self, f"d_{axis_name}", self.setup_d_1d(i))
 
         if build_t_inv and self.num_dim == 3:
+            assert all([self.element_shape[i] % 2 == 1 for i in range(self.num_dim)])
             n_in = [e * d for e, d in zip(n_in_factor or element_factor, device_shape)]
             n_out = [
                 e * d for e, d in zip(n_out_factor or element_factor, device_shape)

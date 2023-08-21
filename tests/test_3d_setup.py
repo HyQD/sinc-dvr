@@ -28,11 +28,11 @@ class Setup3DTests(unittest.TestCase):
         sd = SincDVR(
             num_dim=3,
             steps=(0.1, 0.2, 0.3),
-            element_factor=(10, 11, 13),
+            element_factor=(9, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_in_factor=(6, 7, 9),
-            n_out_factor=(28, 29, 31),
+            n_in_factor=(5, 7, 9),
+            n_out_factor=(27, 29, 31),
         )
 
         # Check that grid is equal on both sides of zero
@@ -108,44 +108,33 @@ class Setup3DTests(unittest.TestCase):
             ),
         )
 
-        # Very slow test below
-        # for j_1 in range(sd.element_shape[0]):
-        #     for j_2 in range(sd.element_shape[1]):
-        #         for j_3 in range(sd.element_shape[2]):
-        #             val = 0.0
-        #             for m_1 in range(sd.element_shape[0]):
-        #                 for m_2 in range(sd.element_shape[1]):
-        #                     for m_3 in range(sd.element_shape[2]):
-        #                         val += sd.t_inv[- m_1 + j_1, - m_2 + j_2, - m_3 + j_3] * chi[m_1, m_2, m_3]
-        #             assert abs(val - t_inv_from_fft[j_1, j_2, j_3]) < 1e-12
-
-        if all(sd.element_shape[i] % 2 == 1 for i in range(3)):
-            z = [sd.element_shape[i] // 2 for i in range(3)]
-            z = [0, 0, 0]
-            assert (
-                abs(
-                    jnp.sum(jnp.abs(chi))
-                    - sd.evaluate_basis_functions(
-                        c, [sd.x[z[0]], sd.y[z[1]], sd.z[z[2]]]
-                    )
-                )
-                < 1e-12
+        # Test the shifting of the center by instead shifting the grid
+        z = [sd.element_shape[i] // 2 for i in range(3)]
+        assert (
+            abs(
+                jnp.sum(jnp.abs(chi))
+                - sd.evaluate_basis_functions(c, [sd.x[z[0]], sd.y[z[1]], sd.z[z[2]]])
             )
+            < 1e-12
+        )
 
         assert jnp.allclose(sd.t_inv / jnp.sqrt(sd.tot_weight), t_inv_from_fft)
-        # print(sd.t_inv)
-        # print(jnp.max(jnp.abs(sd.t_inv)))
-        # print(jnp.sum(jnp.abs(sd.t_inv)))
+
+        sd.construct_r_inv_potentials([c], [-1])
+
+        assert jnp.allclose(
+            -2 * jnp.pi * sd.t_inv.ravel() / sd.tot_weight, sd.r_inv_potentials[0]
+        )
 
     def test_r_inv_potentials(self):
         sd = SincDVR(
             num_dim=3,
             steps=(0.1, 0.2, 0.3),
-            element_factor=(10, 11, 13),
+            element_factor=(9, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_in_factor=(6, 7, 9),
-            n_out_factor=(28, 29, 31),
+            n_in_factor=(5, 7, 9),
+            n_out_factor=(27, 29, 31),
         ).construct_r_inv_potentials(
             centers=[jnp.array([0.0, 0.0, 0.0]), jnp.array([0.5, 0.3, -0.5])],
             charges=[-1.0, 2.0],
@@ -158,11 +147,11 @@ class Setup3DTests(unittest.TestCase):
         sd = SincDVR(
             num_dim=3,
             steps=(0.1, 0.2, 0.3),
-            element_factor=(10, 11, 13),
+            element_factor=(9, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_in_factor=(6, 7, 9),
-            n_out_factor=(28, 29, 31),
+            n_in_factor=(5, 7, 9),
+            n_out_factor=(27, 29, 31),
         )
         coulomb_d = sd.get_coulomb_interaction_matvec_operator(-1, -1, "d")
         coulomb_e = sd.get_coulomb_interaction_matvec_operator(-1, -1, "e")
