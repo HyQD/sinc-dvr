@@ -210,15 +210,23 @@ class SincDVR:
         assert self.num_dim == 3
         assert len(centers) == len(charges)
 
+        # We have to subtract the edge from the centers
+        # This is due to the zero location, i.e., the grid point that equals
+        # the value zero, is located in the middle of the grid and hence has an
+        # index that is not zero.
+        # TODO: Should this be handled another way?
+        shift = jnp.array([self.x[0], self.y[0], self.z[0]])
+
         # TODO: Check sharding
-        # TODO: The fft-solution gives wrong potentials
         self.r_inv_potentials = [
-            2 * jnp.pi / jnp.sqrt(self.tot_weight) * q
-            # * self.t_inv.ravel()
+            2 * jnp.pi
+            # I think this factor comes from the basis functions
+            / jnp.sqrt(self.tot_weight)
+            * q
             * fft_matvec_solution(
                 self.t_inv_fft_circ,
                 self.evaluate_basis_functions(
-                    c,
+                    c + shift,
                     [
                         self.x[:, None, None],
                         self.y[None, :, None],

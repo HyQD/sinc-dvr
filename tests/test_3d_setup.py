@@ -91,14 +91,13 @@ class Setup3DTests(unittest.TestCase):
             n_out_factor=(29, 31, 23),
         )
 
-        # TODO: Figure out why these are shifted!
         c = jnp.array([0.0, 0.0, 0.0])
-        c = jnp.array([sd.x[0], sd.y[0], sd.z[0]])
+        shift = jnp.array([sd.x[0], sd.y[0], sd.z[0]])
         t_inv_from_fft = fft_matvec_solution(
             sd.t_inv_fft_circ,
             (
                 chi := sd.evaluate_basis_functions(
-                    c,
+                    c + shift,
                     [
                         sd.x[:, None, None],
                         sd.y[None, :, None],
