@@ -219,7 +219,8 @@ class SincDVR:
 
         # TODO: Check sharding
         self.r_inv_potentials = [
-            2 * jnp.pi
+            2
+            * jnp.pi
             / jnp.sqrt(self.tot_weight)
             * q
             * fft_matvec_solution(
