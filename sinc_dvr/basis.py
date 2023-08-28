@@ -136,7 +136,7 @@ class SincDVR:
             # "Standard" size of a complex number
             c_size = 2 * jnp.zeros(1).dtype.itemsize
             print(
-                f"Approximate size requirement (in GB): {2 ** 3 * self.num_elements * c_size / 2 ** 30}"
+                f"Approximate size requirement for largest tensor (in GB): {2 ** self.num_dim * self.num_elements * c_size / 2 ** 30}"
             )
 
         assert self.num_elements > 0
