@@ -12,6 +12,7 @@ num_devices = math.prod(device_shape)
 os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={num_devices}"
 
 import unittest
+import functools
 import jax
 import jax.numpy as jnp
 
@@ -30,6 +31,13 @@ class Setup3DTests(unittest.TestCase):
             steps=(0.1, 0.2, 0.3),
             device_shape=device_shape,
             build_t_inv=True,
+            t_inv_solver=jax.jit(
+                functools.partial(
+                    jax.scipy.sparse.linalg.cg,
+                    tol=1e-6,
+                ),
+                static_argnums=(0,),
+            ),
         )
 
         # Check that grid is equal on both sides of zero
@@ -90,10 +98,18 @@ class Setup3DTests(unittest.TestCase):
 
     def test_t_inv_fft(self):
         sd = SincDVR(
-            positive_extent=(0.9, 2.2, 1.5),
+            positive_extent=(1.5, 2.2, 2.1),
             steps=(0.1, 0.2, 0.3),
             device_shape=device_shape,
             build_t_inv=True,
+            t_inv_solver=jax.jit(
+                functools.partial(
+                    jax.scipy.sparse.linalg.bicgstab,
+                    tol=1e-6,
+                ),
+                static_argnums=(0,),
+            ),
+            verbose=True,
         )
 
         c = jnp.array([0.0, 0.0, 0.0])
@@ -129,11 +145,8 @@ class Setup3DTests(unittest.TestCase):
         assert jnp.allclose(
             -2 * jnp.pi * sd.t_inv.ravel() / sd.tot_weight, sd.r_inv_potentials[0]
         )
-        # Check that maximum of (positive) Coulomb potential is at [dx, 0, 0]
-        x_max = jnp.argmax(
-            sd.r_inv_potentials[1].real.reshape(sd.grid_shape)[:, z[1], z[2]]
-        )
-        print(x_max, sd.x[x_max], sd.steps[0])
+
+        # Check that the maximum of the (positive) Coulomb potential is at [dx, 0, 0]
         assert (
             sd.x[
                 jnp.argmax(
@@ -145,13 +158,10 @@ class Setup3DTests(unittest.TestCase):
 
     def test_r_inv_potentials(self):
         sd = SincDVR(
-            num_dim=3,
+            positive_extent=(2.0, 1.9, 2.3),
             steps=(0.1, 0.2, 0.3),
-            element_factor=(9, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_in_factor=(5, 7, 9),
-            n_out_factor=(27, 29, 31),
         ).construct_r_inv_potentials(
             centers=[jnp.array([0.0, 0.0, 0.0]), jnp.array([0.5, 0.3, -0.5])],
             charges=[-1.0, 2.0],
@@ -162,13 +172,10 @@ class Setup3DTests(unittest.TestCase):
 
     def test_coulomb_interaction_operators(self):
         sd = SincDVR(
-            num_dim=3,
+            positive_extent=(1.8, 3.1, 2.3),
             steps=(0.1, 0.2, 0.3),
-            element_factor=(9, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_in_factor=(5, 7, 9),
-            n_out_factor=(27, 29, 31),
         )
         coulomb_d = sd.get_coulomb_interaction_matvec_operator(-1, -1, "d")
         coulomb_e = sd.get_coulomb_interaction_matvec_operator(-1, -1, "e")
