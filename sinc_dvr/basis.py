@@ -18,24 +18,25 @@ class SincDVR:
 
     Parameters
     ----------
-    num_dim : int
-        The number of Cartesian dimensions in the problem. Accepted values
-        are 1, 2 and 3.
+    positive_extent: tuple[float]
+        The positive extent of each axis. The full extent for dimension `i`
+        will be `extent[i] = [-positive_extent[i], positive_extent[i]]`.
+        In order to ensure that we get an integer number of elements, and that
+        it splits up evenly on the devices, the program will at times round the
+        extent up to the nearest integer.
+        This means that the actual extent will always be greater than, or
+        equal, to the requested value.
     steps : tuple[float]
         The (uniform) step length in each Cartesian direction. There should
-        be one step length for each dimension. Use three of the same step
-        lengths in case of an isotropic grid. The step for a direction is also
-        the weight in the quadrature.
-    element_factor : tuple[int]
-        The number of elements along dimension `i` is `element_shape[i] =
-        element_factor[i] * device_shape[i]`. This is to ensure that the
-        element shape and device shape are congruent. Notably, this means that
-        the point `0` in an axis is included only for an odd number of devices
-        along that same axis.
+        be one step length for each dimension. Use the same step lengths in
+        each direction case of an isotropic grid. The step for a direction is
+        also the weight in the quadrature.
     device_shape: tuple[int]
         The distribution of devices on the computer. For a single device in
         three dimensions this is `(1, 1, 1)`. This parameter tells the program
         how the arrays should be sharded.
+        Note that the number of devices along an axis must be an odd number to
+        ensure that zero is included as a point.
     build_t_inv: bool
         If `True` we solve the Poisson equation in order to build the inverse
         of kinetic energy operator. Otherwise, no inverse is found. This is
@@ -44,18 +45,24 @@ class SincDVR:
         3D, and is ignored for lower dimenisionalities. Note that the number of
         elements must be odd in all directions when using this flag.  Default
         is `False`.
-    n_in_factor: tuple[int]
-        The number of internal indices (dubbed :math:`n_{small}` in [1]) used
-        for the solution of the Poisson equation is given by `n_in[i] =
-        n_in_factor[i] * device_shape[i]`. Ignored if `build_t_inv = False`, or
-        `num_dim != 3`. For `n_in_factor = None` we use `n_in = element_shape`
-        (see above). Default is `n_s = None`.
-    n_out_factor: tuple[int]
-        The number of "far-away"-coordinates used when solving the Poisson
-        equation (dubbed :math:`n_{big}` in [1]) is `n_out[i] = n_out_factor[i]
-        * device_shape[i]`. The same conditions as for `n_in_factor` applies.
-        Note that `n_out_factor[i] >= n_in_factor[i]`. Default is `n_out_factor
-        = None`.
+    t_inv_tol: float
+        The tolerance for the conjugate gradient method used when solving the
+        Poisson equation. Ignored if `build_t_inv = False`. Default is `1e-5`.
+    # n_in_factor: tuple[int]
+    #     The number of internal indices (dubbed :math:`n_{small}` in [1]) used
+    #     for the solution of the Poisson equation is given by `n_in[i] =
+    #     n_in_factor[i] * device_shape[i]`. Ignored if `build_t_inv = False`, or
+    #     `num_dim != 3`. For `n_in_factor = None` we use `n_in = element_shape`
+    #     (see above). Default is `n_s = None`.
+    # n_out_factor: tuple[int]
+    #     The number of "far-away"-coordinates used when solving the Poisson
+    #     equation (dubbed :math:`n_{big}` in [1]) is `n_out[i] = n_out_factor[i]
+    #     * device_shape[i]`. The same conditions as for `n_in_factor` applies.
+    #     Note that `n_out_factor[i] >= n_in_factor[i]`. Default is `n_out_factor
+    #     = None`.
+    verbose: bool
+        Toggle used to turn on (`True`) or off (`False`) some output from the
+        class. Default is `False`.
 
 
     References
@@ -67,27 +74,70 @@ class SincDVR:
 
     def __init__(
         self,
-        num_dim: int,
+        positive_extent: tuple[float],
         steps: tuple[float],
-        element_factor: tuple[int],
         device_shape: tuple[int],
         build_t_inv: bool = False,
-        n_in_factor: tuple[int] = None,
-        n_out_factor: tuple[int] = None,
+        t_inv_tol: float = 1e-5,
+        # n_in_factor: tuple[int] = None,
+        # n_out_factor: tuple[int] = None,
+        verbose: bool = False,
     ) -> None:
+        num_dim = len(positive_extent)
         assert num_dim in [1, 2, 3]
         assert len(device_shape) == num_dim
-        assert len(device_shape) == len(element_factor)
-        assert len(device_shape) == len(steps)
+        assert len(steps) == num_dim
+        assert all([n_dev % 2 == 1 for n_dev in device_shape])
 
         self.num_dim = num_dim
 
-        self.element_shape = [e * d for e, d in zip(element_factor, device_shape)]
+        num_points_per_device_shape = [
+            # Ensure an odd number of points for an odd number of devices
+            (_ := math.ceil((math.ceil(pos_ext / dw) * 2 + 1) / n_dev))
+            + (_ + n_dev) % 2
+            for pos_ext, dw, n_dev in zip(positive_extent, steps, device_shape)
+        ]
+        num_points_shape = [
+            nppds * n_dev
+            for nppds, n_dev in zip(num_points_per_device_shape, device_shape)
+        ]
+        num_points_pos_shape = [(nps - 1) / 2 for nps in num_points_shape]
+        new_positive_extent = [
+            npps * dw for npps, dw in zip(num_points_pos_shape, steps)
+        ]
+
+        if (
+            any(
+                [
+                    (new_pos_ext - pos_ext) != 0
+                    for new_pos_ext, pos_ext in zip(
+                        new_positive_extent, positive_extent
+                    )
+                ]
+            )
+            and verbose
+        ):
+            print(
+                f"Positive extent increased from: {positive_extent} to: {new_positive_extent}"
+            )
+
+        self.grid_shape = num_points_shape
         self.steps = steps
         self.device_shape = device_shape
-        self.num_elements = math.prod(self.element_shape)
+
+        self.num_elements = math.prod(self.grid_shape)
         self.num_devices = math.prod(self.device_shape)
         self.tot_weight = math.prod(self.steps)
+
+        if verbose:
+            print(
+                f"Number of elements: {self.num_elements} distributed as: {self.grid_shape}"
+            )
+            # "Standard" size of a complex number
+            c_size = 2 * jnp.zeros(1).dtype.itemsize
+            print(
+                f"Approximate size requirement (in GB): {2 ** 3 * self.num_elements * c_size / 2 ** 30}"
+            )
 
         assert self.num_elements > 0
         assert self.num_devices > 0
@@ -106,7 +156,7 @@ class SincDVR:
             self.inds.append(
                 (
                     _ := jax.device_put(
-                        jnp.arange(self.element_shape[i]),
+                        jnp.arange(self.grid_shape[i]),
                         NamedSharding(self.mesh, P(axis_name)),
                     )
                 )
@@ -116,34 +166,6 @@ class SincDVR:
             setattr(self, f"t_{axis_name}", self.setup_t_1d(i))
             setattr(self, f"d_{axis_name}", self.setup_d_1d(i))
 
-        if build_t_inv and self.num_dim == 3:
-            assert all([self.element_shape[i] % 2 == 1 for i in range(self.num_dim)])
-            n_in = [e * d for e, d in zip(n_in_factor or element_factor, device_shape)]
-            n_out = [
-                e * d for e, d in zip(n_out_factor or element_factor, device_shape)
-            ]
-
-            assert all([n_out[i] >= n_in[i] for i in range(self.num_dim)])
-            assert all([n_in[i] <= self.element_shape[i] for i in range(self.num_dim)])
-            assert all(
-                [
-                    (n_in[i] % 2) == (self.element_shape[i] % 2)
-                    for i in range(self.num_dim)
-                ]
-            )
-            assert all([(n_in[i] % 2) == (n_out[i] % 2) for i in range(self.num_dim)])
-
-            self.ret_inds = [(_ := jnp.arange(o)) - max(_) / 2 for o in n_in]
-            self.sum_inds = [(_ := jnp.arange(s)) - max(_) / 2 for s in n_out]
-
-            # Also known as "v" from Ref. [1]
-            self.t_inv = jax.device_put(
-                setup_t_inv(self.inds, self.ret_inds, self.sum_inds, self.steps),
-                NamedSharding(self.mesh, self.spec),
-            )
-            # TODO: Test device sharding
-            self.t_inv_fft_circ = get_fft_embedded_circulant(self.t_inv)
-
         # Kinetic operator matrix elements embedded in a circulant tensor
         # TODO: Test device sharding
         self.t_fft_circ = get_fft_embedded_circulant(
@@ -151,6 +173,49 @@ class SincDVR:
                 [getattr(self, f"t_{axis_name}")[:, 0] for axis_name in self.axis_names]
             )
         )
+
+        if build_t_inv and self.num_dim == 3:
+            assert all([self.grid_shape[i] % 2 == 1 for i in range(self.num_dim)])
+            # n_in = [e * d for e, d in zip(n_in_factor or element_factor, device_shape)]
+            # n_out = [
+            #     e * d for e, d in zip(n_out_factor or element_factor, device_shape)
+            # ]
+
+            # assert all([n_out[i] >= n_in[i] for i in range(self.num_dim)])
+            # assert all([n_in[i] <= self.grid_shape[i] for i in range(self.num_dim)])
+            # assert all(
+            #     [
+            #         (n_in[i] % 2) == (self.grid_shape[i] % 2)
+            #         for i in range(self.num_dim)
+            #     ]
+            # )
+            # assert all([(n_in[i] % 2) == (n_out[i] % 2) for i in range(self.num_dim)])
+
+            # self.ret_inds = [(_ := jnp.arange(o)) - max(_) / 2 for o in n_in]
+            # self.sum_inds = [(_ := jnp.arange(s)) - max(_) / 2 for s in n_out]
+            # self.t_inv = jax.device_put(
+            #     setup_t_inv(self.inds, self.ret_inds, self.sum_inds, self.steps),
+            #     NamedSharding(self.mesh, self.spec),
+            # )
+
+            zero_locs = [jnp.argwhere(i == 0) for i in self.inds]
+            b = jax.device_put(
+                jnp.zeros([len(i) for i in self.inds], dtype=complex),
+                NamedSharding(self.mesh, self.spec),
+            )
+            # TODO: Check sharding
+            b = b.at[zero_locs[0], zero_locs[1], zero_locs[2]].add(1).ravel()
+
+            A = self.get_kinetic_matvec_operator()
+            # Also known as "v" from Ref. [1]
+            self.t_inv = jax.device_put(
+                jax.scipy.sparse.linalg.cg(A, b, tol=t_inv_tol)[0].reshape(
+                    self.grid_shape
+                ),
+                NamedSharding(self.mesh, self.spec),
+            )
+            # TODO: Test device sharding
+            self.t_inv_fft_circ = get_fft_embedded_circulant(self.t_inv)
 
     def setup_t_1d(self, axis: int) -> jax.Array:
         assert axis in list(range(self.num_dim))
@@ -177,9 +242,7 @@ class SincDVR:
         )
 
     def matvec_kinetic(self, c: jax.typing.ArrayLike) -> jax.Array:
-        return fft_matvec_solution(
-            self.t_fft_circ, c.reshape(self.element_shape)
-        ).ravel()
+        return fft_matvec_solution(self.t_fft_circ, c.reshape(self.grid_shape)).ravel()
 
     def evaluate_basis_functions(
         self, position: jax.typing.ArrayLike, r_i: list[jax.typing.ArrayLike]
@@ -248,9 +311,9 @@ class SincDVR:
             c,
             # Ensure closure for the parameters below
             t_fft_circ=self.t_fft_circ,
-            element_shape=self.element_shape,
+            grid_shape=self.grid_shape,
         ):
-            return fft_matvec_solution(t_fft_circ, c.reshape(element_shape)).ravel()
+            return fft_matvec_solution(t_fft_circ, c.reshape(grid_shape)).ravel()
 
         return matvec_kinetic
 
@@ -284,7 +347,7 @@ class SincDVR:
             charge_2=charge_2,
             tot_weight=self.tot_weight,
             t_inv_fft_circ=self.t_inv_fft_circ,
-            element_shape=self.element_shape,
+            grid_shape=self.grid_shape,
         ):
             return (
                 charge_1
@@ -293,7 +356,7 @@ class SincDVR:
                 * jnp.pi
                 / tot_weight
                 * fft_matvec_solution(
-                    t_inv_fft_circ, (d_conj * d).reshape(element_shape)
+                    t_inv_fft_circ, (d_conj * d).reshape(grid_shape)
                 ).ravel()
                 * c
             )
@@ -308,7 +371,7 @@ class SincDVR:
             charge_2=charge_2,
             tot_weight=self.tot_weight,
             t_inv_fft_circ=self.t_inv_fft_circ,
-            element_shape=self.element_shape,
+            grid_shape=self.grid_shape,
         ):
             return (
                 charge_1
@@ -317,7 +380,7 @@ class SincDVR:
                 * jnp.pi
                 / tot_weight
                 * fft_matvec_solution(
-                    t_inv_fft_circ, (d_conj * c).reshape(element_shape)
+                    t_inv_fft_circ, (d_conj * c).reshape(grid_shape)
                 ).ravel()
                 * d
             )

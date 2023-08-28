@@ -25,9 +25,8 @@ from sinc_dvr import SincDVR
 class Setup2DTests(unittest.TestCase):
     def test_2d_setup(self):
         sd = SincDVR(
-            num_dim=2,
+            positive_extent=(1.0, 6.6),
             steps=(0.1, 0.2),
-            element_factor=(10, 11),
             device_shape=device_shape,
         )
 
@@ -46,13 +45,12 @@ class Setup2DTests(unittest.TestCase):
 
     def test_matvec_kinetic_mels(self):
         sd = SincDVR(
-            num_dim=2,
+            positive_extent=(1.0, 6.6),
             steps=(0.1, 0.2),
-            element_factor=(10, 11),
             device_shape=device_shape,
         )
 
-        c = jax.random.normal(jax.random.PRNGKey(1), sd.element_shape)
+        c = jax.random.normal(jax.random.PRNGKey(1), sd.grid_shape)
 
         res = jnp.einsum("ip, pj -> ij", sd.t_x, c) + jnp.einsum(
             "jp, ip -> ij", sd.t_y, c

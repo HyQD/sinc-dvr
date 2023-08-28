@@ -26,13 +26,10 @@ from sinc_dvr.basis import fft_matvec_solution
 class Setup3DTests(unittest.TestCase):
     def test_3d_setup(self):
         sd = SincDVR(
-            num_dim=3,
+            positive_extent=(0.9, 2.2, 5.0),
             steps=(0.1, 0.2, 0.3),
-            element_factor=(9, 11, 13),
             device_shape=device_shape,
             build_t_inv=True,
-            n_in_factor=(5, 7, 9),
-            n_out_factor=(27, 29, 31),
         )
 
         # Check that grid is equal on both sides of zero
@@ -49,24 +46,35 @@ class Setup3DTests(unittest.TestCase):
                 assert jnp.abs(grid[l // 2]) < 1e-12
 
         # Check that t @ t_inv gives the identity
-        # ident = (
-        #     jnp.einsum("ip, pjk -> ijk", sd.t_x, sd.t_inv)
-        #     + jnp.einsum("jp, ipk -> ijk", sd.t_y, sd.t_inv)
-        #     + jnp.einsum("kp, ijp -> ijk", sd.t_z, sd.t_inv)
-        # )
-        # Note: This is only approximately true when using only an odd number
-        # of elements
+        ident = (
+            jnp.einsum("ip, pjk -> ijk", sd.t_x, sd.t_inv)
+            + jnp.einsum("jp, ipk -> ijk", sd.t_y, sd.t_inv)
+            + jnp.einsum("kp, ijp -> ijk", sd.t_z, sd.t_inv)
+        )
+
+        i, j, k = (
+            sd.inds[0][:, None, None],
+            sd.inds[1][None, :, None],
+            sd.inds[2][None, None, :],
+        )
+        test_ident = jnp.zeros_like(ident)
+        test_ident = test_ident.at[(i == j) & (i == k) & (j == k) & (i == 0)].set(1.0)
+
+        assert jnp.allclose(ident, test_ident, atol=1e-3)
+        assert jnp.allclose(
+            ident, sd.get_kinetic_matvec_operator()(sd.t_inv).reshape(sd.grid_shape)
+        )
+        assert abs(jnp.sum(jnp.abs(ident)) - 1) < 1e-3
 
     def test_matvec_kinetic_mels(self):
         sd = SincDVR(
-            num_dim=3,
+            positive_extent=(0.9, 2.2, 5.0),
             steps=(0.1, 0.2, 0.3),
-            element_factor=(10, 11, 13),
             device_shape=device_shape,
             build_t_inv=False,
         )
 
-        c = jax.random.normal(jax.random.PRNGKey(1), sd.element_shape)
+        c = jax.random.normal(jax.random.PRNGKey(1), sd.grid_shape)
 
         res = (
             jnp.einsum("ip, pjk -> ijk", sd.t_x, c)
@@ -82,13 +90,10 @@ class Setup3DTests(unittest.TestCase):
 
     def test_t_inv_fft(self):
         sd = SincDVR(
-            num_dim=3,
+            positive_extent=(0.9, 2.2, 1.5),
             steps=(0.1, 0.2, 0.3),
-            element_factor=(11, 13, 5),
             device_shape=device_shape,
             build_t_inv=True,
-            n_in_factor=(7, 9, 3),
-            n_out_factor=(29, 31, 23),
         )
 
         c = jnp.array([0.0, 0.0, 0.0])
@@ -108,7 +113,7 @@ class Setup3DTests(unittest.TestCase):
         )
 
         # Test the shifting of the center by instead shifting the grid
-        z = [sd.element_shape[i] // 2 for i in range(3)]
+        z = [sd.grid_shape[i] // 2 for i in range(3)]
         assert (
             abs(
                 jnp.sum(jnp.abs(chi))
@@ -125,10 +130,14 @@ class Setup3DTests(unittest.TestCase):
             -2 * jnp.pi * sd.t_inv.ravel() / sd.tot_weight, sd.r_inv_potentials[0]
         )
         # Check that maximum of (positive) Coulomb potential is at [dx, 0, 0]
+        x_max = jnp.argmax(
+            sd.r_inv_potentials[1].real.reshape(sd.grid_shape)[:, z[1], z[2]]
+        )
+        print(x_max, sd.x[x_max], sd.steps[0])
         assert (
             sd.x[
                 jnp.argmax(
-                    sd.r_inv_potentials[1].real.reshape(sd.element_shape)[:, z[1], z[2]]
+                    sd.r_inv_potentials[1].real.reshape(sd.grid_shape)[:, z[1], z[2]]
                 )
             ]
             == sd.steps[0]
@@ -148,8 +157,8 @@ class Setup3DTests(unittest.TestCase):
             charges=[-1.0, 2.0],
         )
 
-        assert sd.r_inv_potentials[0].shape == (math.prod(sd.element_shape),)
-        assert sd.r_inv_potentials[1].shape == (math.prod(sd.element_shape),)
+        assert sd.r_inv_potentials[0].shape == (math.prod(sd.grid_shape),)
+        assert sd.r_inv_potentials[1].shape == (math.prod(sd.grid_shape),)
 
     def test_coulomb_interaction_operators(self):
         sd = SincDVR(
@@ -164,7 +173,7 @@ class Setup3DTests(unittest.TestCase):
         coulomb_d = sd.get_coulomb_interaction_matvec_operator(-1, -1, "d")
         coulomb_e = sd.get_coulomb_interaction_matvec_operator(-1, -1, "e")
 
-        c = jax.random.normal(jax.random.PRNGKey(2), (math.prod(sd.element_shape), 3))
+        c = jax.random.normal(jax.random.PRNGKey(2), (math.prod(sd.grid_shape), 3))
 
         c_d = coulomb_d(c[:, 0].conj(), c[:, 1], c[:, 2])
         c_e = coulomb_e(c[:, 0].conj(), c[:, 2], c[:, 1])
