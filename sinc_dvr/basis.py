@@ -1,6 +1,6 @@
 import math
 import itertools
-from functools import partial
+import functools
 
 import jax
 import jax.numpy as jnp
@@ -43,11 +43,13 @@ class SincDVR:
         needed for the construction of matrix elements for the Coulomb
         attraction and interaction operators. This flag is only applicable in
         3D, and is ignored for lower dimenisionalities. Note that the number of
-        elements must be odd in all directions when using this flag.  Default
-        is `False`.
-    t_inv_tol: float
-        The tolerance for the conjugate gradient method used when solving the
-        Poisson equation. Ignored if `build_t_inv = False`. Default is `1e-5`.
+        elements must be odd in all directions when using this flag. For some
+        values of `positive_extent` (if there is a small extent, I think...)
+        the inverse can get a top in the center, for some reason. Default is
+        `False`.
+    t_inv_solver: function
+        A solver for the Poisson equation. Default for `t_inv_solver = None` is
+        [jax.scipy.sparse.linalg.cg](https://jax.readthedocs.io/en/latest/_autosummary/jax.scipy.sparse.linalg.cg.html).
     # n_in_factor: tuple[int]
     #     The number of internal indices (dubbed :math:`n_{small}` in [1]) used
     #     for the solution of the Poisson equation is given by `n_in[i] =
@@ -78,18 +80,16 @@ class SincDVR:
         steps: tuple[float],
         device_shape: tuple[int],
         build_t_inv: bool = False,
-        t_inv_tol: float = 1e-5,
+        t_inv_solver=None,
         # n_in_factor: tuple[int] = None,
         # n_out_factor: tuple[int] = None,
         verbose: bool = False,
     ) -> None:
-        num_dim = len(positive_extent)
-        assert num_dim in [1, 2, 3]
-        assert len(device_shape) == num_dim
-        assert len(steps) == num_dim
+        self.num_dim = len(positive_extent)
+        assert self.num_dim in [1, 2, 3]
+        assert len(device_shape) == self.num_dim
+        assert len(steps) == self.num_dim
         assert all([n_dev % 2 == 1 for n_dev in device_shape])
-
-        self.num_dim = num_dim
 
         num_points_per_device_shape = [
             # Ensure an odd number of points for an odd number of devices
@@ -142,6 +142,12 @@ class SincDVR:
         assert self.num_elements > 0
         assert self.num_devices > 0
         assert self.tot_weight > 0
+
+        if t_inv_solver is None:
+            t_inv_solver = jax.jit(
+                jax.scipy.sparse.linalg.cg,
+                static_argnums=(0,),
+            )
 
         self.axis_names = [["x", "y", "z"][i] for i in range(self.num_dim)]
 
@@ -203,15 +209,12 @@ class SincDVR:
                 jnp.zeros([len(i) for i in self.inds], dtype=complex),
                 NamedSharding(self.mesh, self.spec),
             )
-            # TODO: Check sharding
             b = b.at[zero_locs[0], zero_locs[1], zero_locs[2]].add(1).ravel()
 
             A = self.get_kinetic_matvec_operator()
             # Also known as "v" from Ref. [1]
             self.t_inv = jax.device_put(
-                jax.scipy.sparse.linalg.cg(A, b, tol=t_inv_tol)[0].reshape(
-                    self.grid_shape
-                ),
+                t_inv_solver(A, b)[0].reshape(self.grid_shape),
                 NamedSharding(self.mesh, self.spec),
             )
             # TODO: Test device sharding
@@ -544,7 +547,7 @@ class PoissonLHS:
         ]
         self.v_shape = [len(s) for s in self.ret_inds]
 
-    @partial(jax.jit, static_argnums=(0,))
+    @functools.partial(jax.jit, static_argnums=(0,))
     def __call__(self, v: jax.typing.ArrayLike) -> jax.Array:
         v = v.reshape(self.v_shape)
 
