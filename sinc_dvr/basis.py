@@ -158,7 +158,6 @@ class SincDVR:
         self.inds = []
 
         for i, axis_name in enumerate(self.axis_names):
-            # setattr(self, axis_name, self.setup_grid(i))
             self.inds.append(
                 (
                     _ := jax.device_put(
