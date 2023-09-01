@@ -22,6 +22,21 @@ config.update("jax_enable_x64", True)
 
 from sinc_dvr import SincDVR
 from sinc_dvr.basis import fft_matvec_solution
+import sinc_dvr.func_basis as sdf
+
+
+class Setup3DFuncTests(unittest.TestCase):
+    def test_3d_setup(self):
+        steps = 0.1, 0.2, 0.3
+        positive_extent = 2.0, 2.1, 2.2
+        inds = sdf.get_oinds(positive_extent, steps, verbose=True)
+        shape = [len(ind.ravel()) for ind in inds]
+
+        t_op = sdf.get_kinetic_matvec_operator(inds, steps)
+        c = jax.random.normal(jax.random.PRNGKey(1), shape)
+
+        res = t_op(c)
+        assert len(res) == len(c.ravel())
 
 
 class Setup3DTests(unittest.TestCase):
