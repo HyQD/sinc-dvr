@@ -601,37 +601,3 @@ def fft_matvec_solution(fft_circ_ten, x_t):
     fft_y = jnp.fft.fftn(y)
 
     return jnp.fft.ifftn(fft_circ_ten * fft_y)[slices]
-
-
-def get_matvec_ein_str(dim):
-    assert dim in [1, 2, 3]
-    ein_str = ""
-    if dim == 1:  # x-axis
-        ein_str = "ip, pjk -> ijk"
-    elif dim == 2:  # y-axis
-        ein_str = "jp, ipk -> ijk"
-    elif dim == 3:  # z-axis
-        ein_str = "kp, ijp -> ijk"
-    else:
-        raise NotImplementedError(
-            f"Invalid value for dim ({dim}), should be either 1, 2 or 3"
-        )
-
-    return ein_str
-
-
-def get_vecvec_ein_str(dim):
-    assert dim in [1, 2, 3]
-    ein_str = ""
-    if dim == 1:  # x-axis
-        ein_str = "i, ijk -> ijk"
-    elif dim == 2:  # y-axis
-        ein_str = "j, ijk -> ijk"
-    elif dim == 3:  # z-axis
-        ein_str = "k, ijk -> ijk"
-    else:
-        raise NotImplementedError(
-            f"Invalid value for dim ({dim}), should be either 1, 2 or 3"
-        )
-
-    return ein_str
