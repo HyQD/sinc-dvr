@@ -32,10 +32,35 @@ class Setup3DFuncTests(unittest.TestCase):
         inds = sdf.get_oinds(positive_extent, steps, verbose=True)
         shape = [len(ind.ravel()) for ind in inds]
 
-        t_op = sdf.get_kinetic_matvec_operator(inds, steps)
+        t_fft_circ = sdf.get_t_fft_circ(inds, steps)
+        t_op = sdf.get_kinetic_matvec_operator(t_fft_circ)
+        p_x, p_y, p_z = [
+            sdf.get_p_matvec_operator(inds, steps, i) for i in range(len(steps))
+        ]
+        x, y, z = [ind * dw for ind, dw in zip(inds, steps)]
+
+        t = 1
         c = jax.random.normal(jax.random.PRNGKey(1), shape)
 
-        res = t_op(c)
+        laser = jax.jit(
+            lambda t, x=x, shape=shape, omega=1, k=2, E0=1: E0
+            * jnp.sin(omega * t - k * x)
+        )
+
+        res = (
+            t_op(c.ravel())  # Kinetic
+            + (x * c + y * c + z * c).ravel()  # Example position operator
+            + p_x(c.ravel())
+            + p_y(c.ravel())
+            + p_z(c.ravel())  # Sum of all momentum operators
+            + (
+                (x * p_y(c.ravel()).reshape(shape)).ravel()
+                - (y * p_x(c.ravel()).reshape(shape)).ravel()
+            )  # l_z operator
+            + (
+                laser(t) * p_y(c.ravel()).reshape(shape)
+            ).ravel()  # Example vector potential laser
+        )
         assert len(res) == len(c.ravel())
 
 

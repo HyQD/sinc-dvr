@@ -94,11 +94,19 @@ def evaluate_spfs(inds, steps, position):
     )
 
 
-def get_kinetic_matvec_operator(inds, steps, t_fft_circ=None):
-    shape = [len(ind.ravel()) for ind in inds]
+# def get_position_matvec_operator(inds, steps, axis, func=None):
+#     shape = [len(ind.ravel()) for ind in inds]
+#     dim = len(inds)
+#
+#     position = inds[axis] * steps[axis]
+#
+#     if func is None:
+#         @jax.jit
+#         def matvec_position(c,
 
-    if t_fft_circ is None:
-        t_fft_circ = get_t_fft_circ(inds, steps)
+
+def get_kinetic_matvec_operator(t_fft_circ):
+    shape = [t // 2 for t in t_fft_circ.shape]
 
     @jax.jit
     def matvec_kinetic(c, t_fft_circ=t_fft_circ, shape=shape):
@@ -107,36 +115,84 @@ def get_kinetic_matvec_operator(inds, steps, t_fft_circ=None):
     return matvec_kinetic
 
 
-def get_r_inv_potential_function(inds, steps, *args, t_inv_fft_circ=None, **kwargs):
-    if t_inv_fft_circ is None:
-        t_inv_fft_circ = get_t_inv_fft_circ(inds, steps, *args, **kwargs)
+def get_p_matvec_operator(inds, steps, axis):
+    shape = [len(ind.ravel()) for ind in inds]
+    dim = len(inds)
+    assert dim <= 3
+    assert axis < len(inds)
+
+    p = setup_p_1d(
+        inds[axis].ravel()[:, None], inds[axis].ravel()[None, :], steps[axis]
+    )
+
+    p_einsum = ["ip", "jp", "kp"][axis]
+    c_einsum = [
+        ["p"],
+        ["pj", "ip"],
+        ["pjk", "ipk", "ijp"],
+    ][
+        dim - 1
+    ][axis]
+    o_einsum = ["i", "ij", "ijk"][dim - 1]
+
+    @jax.jit
+    def matvec_p(
+        c, p=p, shape=shape, p_einsum=p_einsum, c_einsum=c_einsum, o_einsum=o_einsum
+    ):
+        return jnp.einsum(
+            f"{p_einsum}, {c_einsum} -> {o_einsum}", p, c.reshape(shape)
+        ).ravel()
+
+    return matvec_p
+
+
+def get_r_inv_potential_function(inds, steps, t_inv_fft_circ):
+    # We have to subtract the edge from the centers
+    # This is due to the zero location, i.e., the grid point that equals
+    # the value zero, is located in the middle of the grid and hence has an
+    # index that is not zero.
+    shift = jnp.array([ind * dw for ind, dw in zip(inds, steps)])
 
     @jax.jit
     def r_inv_potential(
-        center, charge, inds=inds, steps=steps, t_inv_fft_circ=t_inv_fft_circ
+        center,
+        charge,
+        inds=inds,
+        steps=steps,
+        t_inv_fft_circ=t_inv_fft_circ,
+        shift=shift,
     ):
+        """
+        Parameters
+        ----------
+        center : jax.Array
+            The coordinates of the center of the potential.
+        charge : float
+            The total charge experienced by a particle interacting with the
+            potential. Negative for an attractive potential, and positive for a
+            repulsive potential.
+        """
         return (
             2
             * jnp.pi
             / jnp.sqrt(math.prod(steps))
             * charge
-            * fft_matvec_solution(t_inv_fft_circ, evaluate_spfs(inds, steps, center))
-        )
+            * fft_matvec_solution(
+                t_inv_fft_circ, evaluate_spfs(inds, steps, center + shift)
+            )
+        ).ravel()
 
     return r_inv_potential
 
 
 @jax.jit
-def setup_t_inv(inds, steps, solver=None, kinetic_matvec_operator=None):
+def setup_t_inv(inds, steps, kinetic_matvec_operator, solver=None):
     if solver is None:
         # Use cg by default as the problem is symmetric
         solver = jax.jit(
             jax.scipy.sparse.linalg.cg,
             static_argnums=(0,),
         )
-
-    if kinetic_matvec_operator is None:
-        kinetic_matvec_operator = get_kinetic_matvec_operator(inds, steps)
 
     z = [jnp.argwhere(i == 0) for i in inds]
     # TODO: Check sharding
@@ -148,11 +204,10 @@ def setup_t_inv(inds, steps, solver=None, kinetic_matvec_operator=None):
 
 
 @jax.jit
-def get_t_inv_fft_circ(*args, t_inv=None, **kwargs):
-    if t_inv is None:
-        t_inv = setup_t_inv(*args, **kwargs)
-
-    return get_fft_embedded_circulant(t_inv)
+def get_t_inv_fft_circ(inds, steps, kinetic_matvec_operator, solver=None):
+    return get_fft_embedded_circulant(
+        setup_t_inv(inds, steps, kinetic_matvec_operator, solver=solver)
+    )
 
 
 @jax.jit
@@ -182,8 +237,7 @@ def get_t_fft_circ(inds, steps):
     t_vecs = [
         setup_t_1d(ind.ravel(), ind.ravel()[0], step) for ind, step in zip(inds, steps)
     ]
-    t_ten = get_t_ten(t_vecs)
-    return get_fft_embedded_circulant(t_ten)
+    return get_fft_embedded_circulant(get_t_ten(t_vecs))
 
 
 @jax.jit
