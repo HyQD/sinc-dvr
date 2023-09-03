@@ -1,4 +1,5 @@
 import math
+import functools
 import itertools
 
 import jax
@@ -94,15 +95,28 @@ def evaluate_spfs(inds, steps, position):
     )
 
 
-# def get_position_matvec_operator(inds, steps, axis, func=None):
-#     shape = [len(ind.ravel()) for ind in inds]
-#     dim = len(inds)
-#
-#     position = inds[axis] * steps[axis]
-#
-#     if func is None:
-#         @jax.jit
-#         def matvec_position(c,
+def get_position_dependent_matvec_operator(inds, pos_func):
+    # Here pos_func is either a callable operator that can contain any
+    # position-dependent operators, e.g., pos_func = lambda t, x=x: jnp.sin(t -
+    # x), or any sum of any power of the position operators themselves, e.g.,
+    # pos_func = x**2.
+    shape = [len(ind.ravel()) for ind in inds]
+
+    if callable(pos_func):
+
+        @jax.jit
+        def matvec_position_func(
+            c, *func_args, shape=shape, pos_func=pos_func, **func_kwargs
+        ):
+            return (pos_func(*func_args, **func_kwargs) * c.reshape(shape)).ravel()
+
+        return matvec_position_func
+
+    @jax.jit
+    def matvec_position(c, shape=shape, pos_func=pos_func):
+        return (pos_func * c.reshape(shape)).ravel()
+
+    return matvec_position
 
 
 def get_kinetic_matvec_operator(t_fft_circ):
@@ -151,7 +165,7 @@ def get_r_inv_potential_function(inds, steps, t_inv_fft_circ):
     # This is due to the zero location, i.e., the grid point that equals
     # the value zero, is located in the middle of the grid and hence has an
     # index that is not zero.
-    shift = jnp.array([ind * dw for ind, dw in zip(inds, steps)])
+    shift = jnp.array([ind.ravel()[0] * dw for ind, dw in zip(inds, steps)])
 
     @jax.jit
     def r_inv_potential(
@@ -180,13 +194,14 @@ def get_r_inv_potential_function(inds, steps, t_inv_fft_circ):
             * fft_matvec_solution(
                 t_inv_fft_circ, evaluate_spfs(inds, steps, center + shift)
             )
-        ).ravel()
+        )
 
     return r_inv_potential
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnums=(2, 3))
 def setup_t_inv(inds, steps, kinetic_matvec_operator, solver=None):
+    shape = [len(ind.ravel()) for ind in inds]
     if solver is None:
         # Use cg by default as the problem is symmetric
         solver = jax.jit(
@@ -194,16 +209,16 @@ def setup_t_inv(inds, steps, kinetic_matvec_operator, solver=None):
             static_argnums=(0,),
         )
 
-    z = [jnp.argwhere(i == 0) for i in inds]
+    z = [len(ind.ravel()) // 2 for ind in inds]
     # TODO: Check sharding
     b = sum([jnp.zeros_like(ind).astype(complex) for ind in inds])
     b = b.at[z[0], z[1], z[2]].add(1).ravel()
     A = kinetic_matvec_operator
 
-    return solver(A, b)[0]
+    return solver(A, b)[0].reshape(shape)
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnums=(2, 3))
 def get_t_inv_fft_circ(inds, steps, kinetic_matvec_operator, solver=None):
     return get_fft_embedded_circulant(
         setup_t_inv(inds, steps, kinetic_matvec_operator, solver=solver)

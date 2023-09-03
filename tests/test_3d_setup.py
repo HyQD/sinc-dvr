@@ -32,12 +32,36 @@ class Setup3DFuncTests(unittest.TestCase):
         inds = sdf.get_oinds(positive_extent, steps, verbose=True)
         shape = [len(ind.ravel()) for ind in inds]
 
+        solver = jax.jit(
+            functools.partial(
+                jax.scipy.sparse.linalg.cg,
+                tol=1e-4,
+            ),
+            static_argnums=(0,),
+        )
+
         t_fft_circ = sdf.get_t_fft_circ(inds, steps)
         t_op = sdf.get_kinetic_matvec_operator(t_fft_circ)
+        t_inv_fft_circ = sdf.get_t_inv_fft_circ(inds, steps, t_op, solver=solver)
+        v_pot_func = sdf.get_r_inv_potential_function(inds, steps, t_inv_fft_circ)
+        v_op_1 = sdf.get_position_dependent_matvec_operator(
+            inds,
+            v_pot_func(jnp.array([0.0, 0.0, -0.5]), -1),
+        )
+        v_op_2 = sdf.get_position_dependent_matvec_operator(
+            inds,
+            v_pot_func(jnp.array([0.0, 0.0, 0.5]), -1),
+        )
         p_x, p_y, p_z = [
             sdf.get_p_matvec_operator(inds, steps, i) for i in range(len(steps))
         ]
         x, y, z = [ind * dw for ind, dw in zip(inds, steps)]
+        ho_pot_op = sdf.get_position_dependent_matvec_operator(
+            inds,
+            jax.jit(lambda x=x, y=y, omega=2: 0.5 * omega**2 * (x**2 + y**2)),
+        )
+        x_op = sdf.get_position_dependent_matvec_operator(inds, x)
+        y_op = sdf.get_position_dependent_matvec_operator(inds, y)
 
         t = 1
         c = jax.random.normal(jax.random.PRNGKey(1), shape)
@@ -47,20 +71,32 @@ class Setup3DFuncTests(unittest.TestCase):
             * jnp.sin(omega * t - k * x)
         )
 
-        res = (
-            t_op(c.ravel())  # Kinetic
-            + (x * c + y * c + z * c).ravel()  # Example position operator
-            + p_x(c.ravel())
-            + p_y(c.ravel())
-            + p_z(c.ravel())  # Sum of all momentum operators
-            + (
-                (x * p_y(c.ravel()).reshape(shape)).ravel()
-                - (y * p_x(c.ravel()).reshape(shape)).ravel()
-            )  # l_z operator
-            + (
-                laser(t) * p_y(c.ravel()).reshape(shape)
-            ).ravel()  # Example vector potential laser
-        )
+        laser_op = sdf.get_position_dependent_matvec_operator(inds, laser)
+
+        @jax.jit
+        def H(
+            t,
+            c,
+            t_op=t_op,
+            v_op_1=v_op_1,
+            v_op_2=v_op_2,
+            ho_pot_op=ho_pot_op,
+            x_op=x_op,
+            y_op=y_op,
+            p_x=p_x,
+            p_y=p_y,
+            p_z=p_z,
+            laser_op=laser_op,
+        ):
+            return (
+                t_op(c)  # Kinetic energy operator
+                + (v_op_1(c) + v_op_2(c))  # 1/r-potentials
+                + ho_pot_op(c)  # Static magnetic field
+                + (x_op(p_y(c)) - y_op(p_x(c)))  # l_z operator
+                + laser_op(p_z(c), t)
+            )
+
+        res = H(t, c)
         assert len(res) == len(c.ravel())
 
 
