@@ -95,6 +95,17 @@ def evaluate_spfs(inds, steps, position):
     )
 
 
+def get_inner_product_function(inds, steps):
+    shape = [len(ind.ravel()) for ind in inds]
+    tot_weight = math.prod(steps)
+
+    @jax.jit
+    def inner_product(c_conj, c_in, tot_weight=tot_weight):
+        return c_conj @ c_in * tot_weight
+
+    return inner_product
+
+
 def get_position_dependent_matvec_operator(inds, pos_func):
     # Here pos_func is either a callable operator that can contain any
     # position-dependent operators, e.g., pos_func = lambda t, x=x: jnp.sin(t -
