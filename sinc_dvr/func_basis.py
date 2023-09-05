@@ -248,9 +248,31 @@ def setup_p_1d(i, j, step):
 
 
 @jax.jit
+def get_t_ten(t_vecs):
+    assert len(t_vecs) in [1, 2, 3]
+    if len(t_vecs) == 1:
+        return t_vecs[0]
+    deltas = [
+        jnp.concatenate([jnp.array([1]), jnp.zeros(len(t_vecs[i]) - 1)])
+        for i in range(len(t_vecs))
+    ]
+    if len(t_vecs) == 2:
+        return (
+            jnp.kron(t_vecs[0], deltas[1]) + jnp.kron(deltas[0], t_vecs[1])
+        ).reshape([len(t) for t in t_vecs])
+    return (
+        jnp.kron(jnp.kron(t_vecs[0], deltas[1]), deltas[2])
+        + jnp.kron(jnp.kron(deltas[0], t_vecs[1]), deltas[2])
+        + jnp.kron(jnp.kron(deltas[0], deltas[1]), t_vecs[2])
+    ).reshape([len(t) for t in t_vecs])
+
+
+@jax.jit
 def get_t_fft_circ(inds, steps):
-    t_vecs = [setup_t_1d(ind, ind.ravel()[0], step) for ind, step in zip(inds, steps)]
-    return get_fft_embedded_circulant(sum(t_vecs))
+    t_vecs = [
+        setup_t_1d(ind.ravel(), ind.ravel()[0], step) for ind, step in zip(inds, steps)
+    ]
+    return get_fft_embedded_circulant(get_t_ten(t_vecs))
 
 
 @jax.jit
