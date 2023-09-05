@@ -25,29 +25,64 @@ from sinc_dvr.basis import fft_matvec_solution
 import sinc_dvr.func_basis as sdf
 
 
+def get_p_matvec_operator_2(inds, steps, axis):
+    shape = [len(ind.ravel()) for ind in inds]
+    dim = len(inds)
+    assert dim <= 3
+    assert axis < len(inds)
+
+    p = sdf.setup_p_1d(
+        inds[axis].ravel()[:, None], inds[axis].ravel()[None, :], steps[axis]
+    )
+
+    p_einsum = ["ip", "jp", "kp"][axis]
+    c_einsum = [
+        ["p"],
+        ["pj", "ip"],
+        ["pjk", "ipk", "ijp"],
+    ][
+        dim - 1
+    ][axis]
+    o_einsum = ["i", "ij", "ijk"][dim - 1]
+
+    @jax.jit
+    def matvec_p(
+        c, p=p, shape=shape, p_einsum=p_einsum, c_einsum=c_einsum, o_einsum=o_einsum
+    ):
+        return jnp.einsum(
+            f"{p_einsum}, {c_einsum} -> {o_einsum}", p, c.reshape(shape)
+        ).ravel()
+
+    return matvec_p
+
+
 class Setup3DFuncTests(unittest.TestCase):
     def test_3d_setup(self):
         steps = 0.1, 0.2, 0.3
-        positive_extent = 2.0, 2.1, 2.2
+        positive_extent = 1.0, 1.1, 1.2
         inds = sdf.get_oinds(positive_extent, steps, verbose=True)
         shape = [len(ind.ravel()) for ind in inds]
 
         solver = jax.jit(
             functools.partial(
                 jax.scipy.sparse.linalg.cg,
-                tol=1e-4,
+                tol=1e-3,
             ),
             static_argnums=(0,),
         )
 
+        print("Setting up t_fft_circ")
         t_fft_circ = sdf.get_t_fft_circ(inds, steps)
         t_op = sdf.get_kinetic_matvec_operator(t_fft_circ)
+        print("Setting up t_inv_fft_circ")
         t_inv_fft_circ = sdf.get_t_inv_fft_circ(inds, steps, t_op, solver=solver)
         v_pot_func = sdf.get_r_inv_potential_function(inds, steps, t_inv_fft_circ)
+        print("Setting up v_op_1")
         v_op_1 = sdf.get_position_dependent_matvec_operator(
             inds,
             v_pot_func(jnp.array([0.0, 0.0, -0.5]), -1),
         )
+        print("Setting up v_op_2")
         v_op_2 = sdf.get_position_dependent_matvec_operator(
             inds,
             v_pot_func(jnp.array([0.0, 0.0, 0.5]), -1),
@@ -55,6 +90,7 @@ class Setup3DFuncTests(unittest.TestCase):
         p_x, p_y, p_z = [
             sdf.get_p_matvec_operator(inds, steps, i) for i in range(len(steps))
         ]
+
         x, y, z = [ind * dw for ind, dw in zip(inds, steps)]
         ho_pot_op = sdf.get_position_dependent_matvec_operator(
             inds,
@@ -64,7 +100,15 @@ class Setup3DFuncTests(unittest.TestCase):
         y_op = sdf.get_position_dependent_matvec_operator(inds, y)
 
         t = 1
-        c = jax.random.normal(jax.random.PRNGKey(1), shape)
+        c = jax.random.normal(jax.random.PRNGKey(1), shape, dtype=complex)
+
+        # Compare the two ways of computing the momentum matrix vector product
+        p2_x, p2_y, p2_z = [
+            get_p_matvec_operator_2(inds, steps, i) for i in range(len(steps))
+        ]
+        assert jnp.allclose(p_x(c), p2_x(c))
+        assert jnp.allclose(p_y(c), p2_y(c))
+        assert jnp.allclose(p_z(c), p2_z(c))
 
         laser = jax.jit(
             lambda t, x=x, shape=shape, omega=1, k=2, E0=1: E0

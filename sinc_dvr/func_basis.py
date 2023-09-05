@@ -142,31 +142,20 @@ def get_kinetic_matvec_operator(t_fft_circ):
 
 def get_p_matvec_operator(inds, steps, axis):
     shape = [len(ind.ravel()) for ind in inds]
-    dim = len(inds)
-    assert dim <= 3
-    assert axis < len(inds)
-
-    p = setup_p_1d(
-        inds[axis].ravel()[:, None], inds[axis].ravel()[None, :], steps[axis]
+    in_shape = inds[axis].shape
+    out_shape = tuple(
+        in_shape[i] * (2 if i == axis else 1) for i in range(len(in_shape))
     )
-
-    p_einsum = ["ip", "jp", "kp"][axis]
-    c_einsum = [
-        ["p"],
-        ["pj", "ip"],
-        ["pjk", "ipk", "ijp"],
-    ][
-        dim - 1
-    ][axis]
-    o_einsum = ["i", "ij", "ijk"][dim - 1]
+    p_vec = setup_p_1d(inds[axis].ravel(), inds[axis].ravel()[0], steps[axis])
+    p_fft_vec = get_fft_embedded_circulant(p_vec).reshape(out_shape)
 
     @jax.jit
     def matvec_p(
-        c, p=p, shape=shape, p_einsum=p_einsum, c_einsum=c_einsum, o_einsum=o_einsum
+        c,
+        p_fft_vec=p_fft_vec,
+        shape=shape,
     ):
-        return jnp.einsum(
-            f"{p_einsum}, {c_einsum} -> {o_einsum}", p, c.reshape(shape)
-        ).ravel()
+        return fft_matvec_solution(p_fft_vec, c.reshape(shape)).ravel()
 
     return matvec_p
 
