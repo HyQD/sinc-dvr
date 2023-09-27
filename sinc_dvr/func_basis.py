@@ -199,6 +199,58 @@ def get_r_inv_potential_function(inds, steps, t_inv_fft_circ):
     return r_inv_potential
 
 
+def get_coulomb_interaction_matvec_operator(
+    inds, steps, t_inv_fft_circ, charge_1, charge_2, kind
+):
+    assert kind in ["d", "e"], f"kind must either be 'd' for direct or 'e' for exchange"
+
+    shape = [len(ind.ravel()) for ind in inds]
+
+    @jax.jit
+    def matvec_direct(
+        c,
+        d_conj,
+        d,
+        charge_1=charge_1,
+        charge_2=charge_2,
+        t_inv_fft_circ=t_inv_fft_circ,
+        steps=steps,
+        shape=shape,
+    ):
+        return (
+            charge_1
+            * charge_2
+            * 2
+            * jnp.pi
+            / math.prod(steps)
+            * fft_matvec_solution(t_inv_fft_circ, (d_conj * d).reshape(shape)).ravel()
+            * c
+        )
+
+    @jax.jit
+    def matvec_exchange(
+        c,
+        d_conj,
+        d,
+        charge_1=charge_1,
+        charge_2=charge_2,
+        t_inv_fft_circ=t_inv_fft_circ,
+        steps=steps,
+        shape=shape,
+    ):
+        return (
+            charge_1
+            * charge_2
+            * 2
+            * jnp.pi
+            / math.prod(steps)
+            * fft_matvec_solution(t_inv_fft_circ, (d_conj * c).reshape(shape)).ravel()
+            * d
+        )
+
+    return matvec_direct if kind == "d" else matvec_exchange
+
+
 @functools.partial(jax.jit, static_argnums=(2, 3))
 def setup_t_inv(inds, steps, kinetic_matvec_operator, solver=None):
     shape = [len(ind.ravel()) for ind in inds]

@@ -87,6 +87,24 @@ class Setup3DFuncTests(unittest.TestCase):
             inds,
             v_pot_func(jnp.array([0.0, 0.0, 0.5]), -1),
         )
+        print("Setting up Coulomb direct")
+        u_d_op = sdf.get_coulomb_interaction_matvec_operator(
+            inds,
+            steps,
+            t_inv_fft_circ,
+            -1.0,
+            -1.0,
+            "d",
+        )
+        print("Setting up Coulomb exchange")
+        u_e_op = sdf.get_coulomb_interaction_matvec_operator(
+            inds,
+            steps,
+            t_inv_fft_circ,
+            -1.0,
+            -1.0,
+            "e",
+        )
         p_x, p_y, p_z = [
             sdf.get_p_matvec_operator(inds, steps, i) for i in range(len(steps))
         ]
@@ -100,7 +118,7 @@ class Setup3DFuncTests(unittest.TestCase):
         y_op = sdf.get_position_dependent_matvec_operator(inds, y)
 
         t = 1
-        c = jax.random.normal(jax.random.PRNGKey(1), shape, dtype=complex)
+        c = jax.random.normal(jax.random.PRNGKey(1), (math.prod(shape),), dtype=complex)
 
         # Compare the two ways of computing the momentum matrix vector product
         p2_x, p2_y, p2_z = [
@@ -124,6 +142,8 @@ class Setup3DFuncTests(unittest.TestCase):
             t_op=t_op,
             v_op_1=v_op_1,
             v_op_2=v_op_2,
+            u_d_op=u_d_op,
+            u_e_op=u_e_op,
             ho_pot_op=ho_pot_op,
             x_op=x_op,
             y_op=y_op,
@@ -135,6 +155,8 @@ class Setup3DFuncTests(unittest.TestCase):
             return (
                 t_op(c)  # Kinetic energy operator
                 + (v_op_1(c) + v_op_2(c))  # 1/r-potentials
+                + u_d_op(c, c.conj(), c)  # Coulomb direct
+                + u_e_op(c, c.conj(), c)  # Coulomb exchange
                 + ho_pot_op(c)  # Static magnetic field
                 + (x_op(p_y(c)) - y_op(p_x(c)))  # l_z operator
                 + laser_op(p_z(c), t)
