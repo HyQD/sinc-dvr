@@ -1,1 +1,1 @@
-from .basis import *
+from .func_basis import *
