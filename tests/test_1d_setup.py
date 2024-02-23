@@ -24,7 +24,7 @@ import sinc_dvr as sd
 
 @jax.jit
 def shielded_coulomb(x_1, x_2, strength, shielding):
-    return strength / jnp.sqrt((x_1**2 - x_2**2) + shielding**2)
+    return strength / jnp.sqrt((x_1 - x_2) ** 2 + shielding**2)
 
 
 class Setup1DFuncTests(unittest.TestCase):
