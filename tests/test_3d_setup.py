@@ -15,6 +15,8 @@ import unittest
 import functools
 import jax
 import jax.numpy as jnp
+import jax.sharding
+from jax.experimental import mesh_utils
 
 import sinc_dvr.func_basis as sdf
 
@@ -160,9 +162,26 @@ class Setup3DFuncTests(unittest.TestCase):
         assert len(res) == len(c.ravel())
 
     def test_3d_setup_sharded(self):
+        axis_names = ["x", "y", "z"]
+        mesh = jax.sharding.Mesh(
+            mesh_utils.create_device_mesh(device_shape), axis_names=axis_names
+        )
+        spec = jax.sharding.PartitionSpec(*axis_names)
+
         steps = 0.1, 0.2, 0.3
         positive_extent = 1.0, 1.1, 1.2
+
         inds = sdf.get_oinds_sharded(positive_extent, steps, device_shape, verbose=True)
+        inds = [
+            jax.device_put(
+                ind.ravel(),
+                jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(axis_name)),
+            ).reshape(ind.shape)
+            for ind, axis_name in zip(inds, axis_names)
+        ]
+
+        assert all(len(ind.devices()) == num_devices for ind in inds)
+
         shape = [len(ind.ravel()) for ind in inds]
 
         solver = jax.jit(
