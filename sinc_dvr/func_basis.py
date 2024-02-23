@@ -204,6 +204,9 @@ def get_coulomb_interaction_matvec_operator(
 ):
     assert kind in ["d", "e"], f"kind must either be 'd' for direct or 'e' for exchange"
 
+    if kind == "e":
+        assert charge_1 == charge_2
+
     shape = [len(ind.ravel()) for ind in inds]
 
     @jax.jit
@@ -232,6 +235,9 @@ def get_coulomb_interaction_matvec_operator(
         c,
         d_conj,
         d,
+        # NOTE: For the exchange term it does not make sense for there to be
+        # two different charges as this term only arises for indistinguishable
+        # particles which must have equal charges.
         charge_1=charge_1,
         charge_2=charge_2,
         t_inv_fft_circ=t_inv_fft_circ,
