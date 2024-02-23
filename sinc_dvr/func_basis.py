@@ -199,6 +199,36 @@ def get_r_inv_potential_function(inds, steps, t_inv_fft_circ):
     return r_inv_potential
 
 
+def get_two_body_toeplitz_matvec_operator(inds, steps, op_fft_circ, kind):
+    assert kind in ["d", "e"], f"kind must either be 'd' for direct or 'e' for exchange"
+
+    shape = [len(ind.ravel()) for ind in inds]
+
+    @jax.jit
+    def matvec_direct(
+        c,
+        d_conj,
+        d,
+        op_fft_circ=op_fft_circ,
+        steps=steps,
+        shape=shape,
+    ):
+        return fft_matvec_solution(op_fft_circ, (d_conj * d).reshape(shape)).ravel() * c
+
+    @jax.jit
+    def matvec_exchange(
+        c,
+        d_conj,
+        d,
+        op_fft_circ=op_fft_circ,
+        steps=steps,
+        shape=shape,
+    ):
+        return fft_matvec_solution(op_fft_circ, (d_conj * c).reshape(shape)).ravel() * d
+
+    return matvec_direct if kind == "d" else matvec_exchange
+
+
 def get_coulomb_interaction_matvec_operator(
     inds, steps, t_inv_fft_circ, charge_1, charge_2, kind
 ):
