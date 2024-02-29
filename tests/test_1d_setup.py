@@ -90,7 +90,58 @@ class Setup1DFuncTests(unittest.TestCase):
                     atol=1e-5,
                 )
 
-    def test_1d_shielded_coulomb_interaction(self):
+    def test_1d_shielded_coulomb_interaction_single_orbital(self):
+        # In this test we compare if the "full" shielded Coulomb interaction
+        # elements (i.e., the rank-2 tensor form of the interaction) gives the
+        # same result as when using the FFT-solution in circulant form.
+
+        steps = (0.1,)
+        positive_extent = (5.0,)
+
+        inds = sd.get_oinds(positive_extent, steps, verbose=True)
+        shape = [len(ind.ravel()) for ind in inds]
+
+        (x,) = [ind * dw for ind, dw in zip(inds, steps)]
+
+        u = shielded_coulomb(x[None, :], x[:, None], 1, 0.25)
+        u_tilde = shielded_coulomb(x.ravel(), x.ravel()[0], 1, 0.25)
+        np.testing.assert_allclose(u[:, 0], u_tilde, atol=1e-5)
+        np.testing.assert_allclose(u, u.conj().T)
+
+        u_fft_circ = sd.get_fft_embedded_circulant(u_tilde)
+
+        u_direct = sd.get_two_body_toeplitz_matvec_operator(
+            inds,
+            u_fft_circ,
+            kind="d",
+        )
+        u_exchange = sd.get_two_body_toeplitz_matvec_operator(
+            inds,
+            u_fft_circ,
+            kind="e",
+        )
+
+        c = jax.random.normal(
+            jax.random.PRNGKey(6), (math.prod(shape),), dtype=complex
+        ) + 1j * jax.random.normal(
+            jax.random.PRNGKey(5), (math.prod(shape),), dtype=complex
+        )
+
+        # Note the ordering!
+        res = (u @ (c.conj() * c)) * c
+        res_2 = u_direct(c, c.conj(), c)
+        res_3 = u_exchange(c, c.conj(), c)
+
+        # NOTE: These tolerances might seem low, but using f64 instead of f32
+        # we can remove the tolerance completely. In other words, this seems to
+        # be a passing test.
+        np.testing.assert_allclose(res, res_2, atol=1e-3)
+        # Exchange and direct are the same when all three coefficients are the
+        # same.
+        np.testing.assert_allclose(res, res_3, atol=1e-3)
+        np.testing.assert_allclose(c.conj() @ res, c.conj() @ res_2, atol=1e-3)
+
+    def test_1d_shielded_coulomb_interaction_multiple_orbitals(self):
         # In this test we compare if the "full" shielded Coulomb interaction
         # elements (i.e., the rank-2 tensor form of the interaction) gives the
         # same result as when using the FFT-solution in circulant form.
@@ -123,31 +174,38 @@ class Setup1DFuncTests(unittest.TestCase):
             kind="e",
         )
 
-        cs = jax.random.normal(
-            jax.random.PRNGKey(1), (math.prod(shape), num_orbitals), dtype=complex
-        ) + 1j * jax.random.normal(
-            jax.random.PRNGKey(1), (math.prod(shape), num_orbitals), dtype=complex
+        # Build vectorized versions of the direct and exchange integrals
+        u_direct_v = jax.vmap(
+            jax.vmap(
+                u_direct,
+                (None, 1, 1),
+                1,
+            ),
+            (1, None, None),
+            1,
+        )
+        u_exchange_v = jax.vmap(
+            jax.vmap(
+                u_exchange,
+                (None, 1, 1),
+                1,
+            ),
+            (1, None, None),
+            1,
         )
 
-        # Test for a single orbital first
-        c = cs[:, 0]
-        # Note the ordering!
-        res = (u @ (c.conj() * c)) * c
-        res_2 = u_direct(c, c.conj(), c)
+        cs = jax.random.normal(
+            jax.random.PRNGKey(3), (math.prod(shape), num_orbitals), dtype=complex
+        ) + 1j * jax.random.normal(
+            jax.random.PRNGKey(2), (math.prod(shape), num_orbitals), dtype=complex
+        )
 
-        # NOTE: These tolerances might seem low, but using f64 instead of f32
-        # we can remove the tolerance completely. In other words, this seems to
-        # be a passing test.
-        np.testing.assert_allclose(res, res_2, atol=1e-3)
-        np.testing.assert_allclose(c.conj() @ res, c.conj() @ res_2, atol=1e-3)
+        res_d, res_e, res_d_2, res_e_2 = [], [], [], []
 
         # Test using all orbitals
         for i in range(cs.shape[1]):
             c = cs[:, i]
-            _res_d = []
-            _res_e = []
-            _res_d_2 = []
-            _res_e_2 = []
+            _res_d, _res_e, _res_d_2, _res_e_2 = [], [], [], []
 
             for j in range(min(num_occupied, cs.shape[1])):
                 d = cs[:, j]
@@ -158,6 +216,8 @@ class Setup1DFuncTests(unittest.TestCase):
                 _res_d_2.append(u_direct(c, d.conj(), d))
                 _res_e_2.append(u_exchange(c, d.conj(), d))
 
+                # Check that the exchange and the direct term gives the same
+                # when we use the same orbital in all three positions.
                 if i == j:
                     np.testing.assert_allclose(_res_d[-1], _res_e[-1])
                     np.testing.assert_allclose(_res_d[-1], _res_d_2[-1], atol=1e-3)
@@ -165,6 +225,41 @@ class Setup1DFuncTests(unittest.TestCase):
 
             np.testing.assert_allclose(sum(_res_d), sum(_res_d_2), atol=1e-3)
             np.testing.assert_allclose(sum(_res_e), sum(_res_e_2), atol=1e-3)
+
+            res_d.append(sum(_res_d))
+            res_e.append(sum(_res_e))
+            res_d_2.append(sum(_res_d_2))
+            res_e_2.append(sum(_res_e_2))
+
+        res_d = jnp.array(res_d).T
+        res_e = jnp.array(res_e).T
+        res_d_2 = jnp.array(res_d_2).T
+        res_e_2 = jnp.array(res_e_2).T
+
+        assert res_d.shape == cs.shape
+        assert res_e.shape == cs.shape
+        assert res_d_2.shape == cs.shape
+        assert res_e_2.shape == cs.shape
+
+        res_d_v = jnp.sum(
+            u_direct_v(
+                cs, cs[:, slice(0, num_occupied)].conj(), cs[:, slice(0, num_occupied)]
+            ),
+            axis=2,
+        )
+        res_e_v = jnp.sum(
+            u_exchange_v(
+                cs, cs[:, slice(0, num_occupied)].conj(), cs[:, slice(0, num_occupied)]
+            ),
+            axis=2,
+        )
+        assert res_d_v.shape == cs.shape
+        assert res_e_v.shape == cs.shape
+
+        np.testing.assert_allclose(res_d_v, res_d, atol=1e-3)
+        np.testing.assert_allclose(res_d_v, res_d_2, atol=1e-3)
+        np.testing.assert_allclose(res_e_v, res_e, atol=1e-3)
+        np.testing.assert_allclose(res_e_v, res_e_2, atol=1e-3)
 
     def test_1d_setup_sharded(self):
         axis_names = ["x"]
