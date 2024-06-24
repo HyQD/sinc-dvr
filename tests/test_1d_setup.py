@@ -208,11 +208,16 @@ class Setup1DFuncTests(unittest.TestCase):
             1,
         )
 
-        cs = jax.random.normal(
-            jax.random.PRNGKey(3), (math.prod(shape), num_orbitals), dtype=complex
-        ) + 1j * jax.random.normal(
-            jax.random.PRNGKey(2), (math.prod(shape), num_orbitals), dtype=complex
-        )
+        # Create an orthonormal set of complex coefficients
+        cs = jnp.linalg.qr(
+            jax.random.uniform(jax.random.PRNGKey(6), (math.prod(shape), num_orbitals))
+            + 1j
+            * jax.random.uniform(
+                jax.random.PRNGKey(7), (math.prod(shape), num_orbitals)
+            )
+        )[0]
+        # Test that the coefficients are orthonormal
+        np.testing.assert_allclose(cs.conj().T @ cs, jnp.eye(num_orbitals), atol=1e-6)
 
         res_d, res_e, res_d_2, res_e_2 = [], [], [], []
 
