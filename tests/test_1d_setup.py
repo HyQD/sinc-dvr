@@ -103,7 +103,12 @@ class Setup1DFuncTests(unittest.TestCase):
 
         (x,) = [ind * dw for ind, dw in zip(inds, steps)]
 
+        # Here `u` is the full rank-2 tensor form of the shielded Coulomb
+        # interaction
         u = shielded_coulomb(x[None, :], x[:, None], 1, 0.25)
+        # And here `u_tilde` is only a single column of the shielded Coulomb
+        # interaction. This column will be used for the FFT/Circulant form of
+        # the operator.
         u_tilde = shielded_coulomb(x.ravel(), x.ravel()[0], 1, 0.25)
         np.testing.assert_allclose(u[:, 0], u_tilde, atol=1e-5)
         np.testing.assert_allclose(u, u.conj().T)
@@ -160,7 +165,12 @@ class Setup1DFuncTests(unittest.TestCase):
 
         (x,) = [ind * dw for ind, dw in zip(inds, steps)]
 
+        # Here `u` is the full rank-2 tensor form of the shielded Coulomb
+        # interaction
         u = shielded_coulomb(x[None, :], x[:, None], 1, 0.25)
+        # And here `u_tilde` is only a single column of the shielded Coulomb
+        # interaction. This column will be used for the FFT/Circulant form of
+        # the operator.
         u_tilde = shielded_coulomb(x.ravel(), x.ravel()[0], 1, 0.25)
         np.testing.assert_allclose(u[:, 0], u_tilde, atol=1e-5)
         np.testing.assert_allclose(u, u.conj().T)
