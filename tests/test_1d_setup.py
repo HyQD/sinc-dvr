@@ -127,6 +127,10 @@ class Setup1DFuncTests(unittest.TestCase):
             jax.random.PRNGKey(5), (math.prod(shape),), dtype=complex
         )
 
+        # Normalize c
+        c = c / jnp.sqrt(c.conj().T @ c)
+        np.testing.assert_allclose(c.conj().T @ c, jnp.eye(1), atol=1e-5)
+
         # Note the ordering!
         res = (u @ (c.conj() * c)) * c
         res_2 = u_direct(c, c.conj(), c)
